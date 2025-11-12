@@ -473,7 +473,7 @@ class UNetModel(nn.Module):
         for module in self.output_blocks:
             cat_in = th.cat([h, hs.pop()], dim=1)
             h = module(cat_in, emb)
-        
+
         return th.sigmoid(self.out(h))
 
 

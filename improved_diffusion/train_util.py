@@ -9,19 +9,16 @@ import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import AdamW
 
-from . import dist_util
-from loggings import logger
-
-from model.fp16_util import (
+from . import dist_util, logger
+from .fp16_util import (
     make_master_params,
     master_params_to_model_params,
     model_grads_to_master_grads,
     unflatten_master_params,
     zero_grad,
 )
-
-from model.basic_module import update_ema
-from diffusion.resample import LossAwareSampler, UniformSampler
+from .nn import update_ema
+from .resample import LossAwareSampler, UniformSampler
 
 # For ImageNet experiments, this was a good default value.
 # We found that the lg_loss_scale quickly climbed to
@@ -36,7 +33,6 @@ class TrainLoop:
         model,
         diffusion,
         data,
-        dataloader,
         batch_size,
         microbatch,
         lr,
@@ -50,11 +46,9 @@ class TrainLoop:
         weight_decay=0.0,
         lr_anneal_steps=0,
     ):
-
         self.model = model
         self.diffusion = diffusion
         self.data = data
-        self.dataloader = dataloader
         self.batch_size = batch_size
         self.microbatch = microbatch if microbatch > 0 else batch_size
         self.lr = lr
@@ -97,7 +91,7 @@ class TrainLoop:
             self.ema_params = [
                 copy.deepcopy(self.master_params) for _ in range(len(self.ema_rate))
             ]
-        
+
         if th.cuda.is_available():
             self.use_ddp = True
             self.ddp_model = DDP(
@@ -116,7 +110,7 @@ class TrainLoop:
                 )
             self.use_ddp = False
             self.ddp_model = self.model
-        
+
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
 
@@ -131,7 +125,7 @@ class TrainLoop:
                 )
 
         dist_util.sync_params(self.model.parameters())
-    
+
     def _load_ema_parameters(self, rate):
         ema_params = copy.deepcopy(self.master_params)
 
@@ -147,7 +141,7 @@ class TrainLoop:
 
         dist_util.sync_params(ema_params)
         return ema_params
-    
+
     def _load_optimizer_state(self):
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
         opt_checkpoint = bf.join(
@@ -159,24 +153,17 @@ class TrainLoop:
                 opt_checkpoint, map_location=dist_util.dev()
             )
             self.opt.load_state_dict(state_dict)
-        
+
     def _setup_fp16(self):
         self.master_params = make_master_params(self.model_params)
         self.model.convert_to_fp16()
-    
+
     def run_loop(self):
-        data_iter = iter(self.dataloader)
         while (
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
-            try:
-                    batch, cond = next(data_iter)
-            except StopIteration:
-                    # StopIteration is thrown if dataset ends
-                    # reinitialize data loader
-                    data_iter = iter(self.dataloader)
-                    batch, cond = next(data_iter)
+            batch, cond = next(self.data)
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
@@ -189,7 +176,7 @@ class TrainLoop:
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:
             self.save()
-    
+
     def run_step(self, batch, cond):
         self.forward_backward(batch, cond)
         if self.use_fp16:
@@ -201,17 +188,20 @@ class TrainLoop:
     def forward_backward(self, batch, cond):
         zero_grad(self.model_params)
         for i in range(0, batch.shape[0], self.microbatch):
-            micro = {"img": batch[i : i + self.microbatch].to(dist_util.dev())}
-            micro_cond = cond[i : i + self.microbatch].to(dist_util.dev())
+            micro = batch[i : i + self.microbatch].to(dist_util.dev())
+            micro_cond = {
+                k: v[i : i + self.microbatch].to(dist_util.dev())
+                for k, v in cond.items()
+            }
             last_batch = (i + self.microbatch) >= batch.shape[0]
-            t, weights = self.schedule_sampler.sample(micro_cond.shape[0], dist_util.dev())
+            t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
 
             compute_losses = functools.partial(
                 self.diffusion.training_losses,
                 self.ddp_model,
-                micro_cond,
+                micro,
                 t,
-                model_kwargs=micro,
+                model_kwargs=micro_cond,
             )
 
             if last_batch or not self.use_ddp:
@@ -234,7 +224,7 @@ class TrainLoop:
                 (loss * loss_scale).backward()
             else:
                 loss.backward()
-    
+
     def optimize_fp16(self):
         if any(not th.isfinite(p.grad).all() for p in self.model_params):
             self.lg_loss_scale -= 1
@@ -250,14 +240,14 @@ class TrainLoop:
             update_ema(params, self.master_params, rate=rate)
         master_params_to_model_params(self.model_params, self.master_params)
         self.lg_loss_scale += self.fp16_scale_growth
-    
+
     def optimize_normal(self):
         self._log_grad_norm()
         self._anneal_lr()
         self.opt.step()
         for rate, params in zip(self.ema_rate, self.ema_params):
             update_ema(params, self.master_params, rate=rate)
-    
+
     def _log_grad_norm(self):
         sqsum = 0.0
         for p in self.master_params:
@@ -322,6 +312,21 @@ class TrainLoop:
             return params
 
 
+def parse_resume_step_from_filename(filename):
+    """
+    Parse filenames of the form path/to/modelNNNNNN.pt, where NNNNNN is the
+    checkpoint's number of steps.
+    """
+    split = filename.split("model")
+    if len(split) < 2:
+        return 0
+    split1 = split[-1].split(".")[0]
+    try:
+        return int(split1)
+    except ValueError:
+        return 0
+
+
 def get_blob_logdir():
     return os.environ.get("DIFFUSION_BLOB_LOGDIR", logger.get_dir())
 
@@ -349,17 +354,3 @@ def log_loss_dict(diffusion, ts, losses):
         for sub_t, sub_loss in zip(ts.cpu().numpy(), values.detach().cpu().numpy()):
             quartile = int(4 * sub_t / diffusion.num_timesteps)
             logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
-
-def parse_resume_step_from_filename(filename):
-    """
-    Parse filenames of the form path/to/modelNNNNNN.pt, where NNNNNN is the
-    checkpoint's number of steps.
-    """
-    split = filename.split("model")
-    if len(split) < 2:
-        return 0
-    split1 = split[-1].split(".")[0]
-    try:
-        return int(split1)
-    except ValueError:
-        return 0

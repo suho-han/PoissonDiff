@@ -1,7 +1,7 @@
 import numpy as np
 import torch as th
 
-from .binomial_diffusion import BinomialDiffusion
+from .gaussian_diffusion import GaussianDiffusion
 
 
 def space_timesteps(num_timesteps, section_counts):
@@ -27,18 +27,14 @@ def space_timesteps(num_timesteps, section_counts):
     :return: a set of diffusion steps from the original process to use.
     """
     if isinstance(section_counts, str):
-        if section_counts.startswith("ddimuni"):
-            desired_count = int(section_counts[len("ddimuni") :])
+        if section_counts.startswith("ddim"):
+            desired_count = int(section_counts[len("ddim") :])
             for i in range(1, num_timesteps):
                 if len(range(0, num_timesteps, i)) == desired_count:
                     return set(range(0, num_timesteps, i))
-        if section_counts.startswith("ddimqua"):
-            desired_count = int(section_counts[len("ddimqua") :])
-            seq = np.linspace(0, np.sqrt(num_timesteps * 0.8), desired_count) ** 2
-            return set([int(s) for s in list(seq)])
-        raise ValueError(
-            f"cannot create exactly {num_timesteps} steps with an integer stride"
-        )
+            raise ValueError(
+                f"cannot create exactly {num_timesteps} steps with an integer stride"
+            )
         section_counts = [int(x) for x in section_counts.split(",")]
     size_per = num_timesteps // len(section_counts)
     extra = num_timesteps % len(section_counts)
@@ -64,7 +60,7 @@ def space_timesteps(num_timesteps, section_counts):
     return set(all_steps)
 
 
-class SpacedDiffusion(BinomialDiffusion):
+class SpacedDiffusion(GaussianDiffusion):
     """
     A diffusion process which can skip steps in a base diffusion process.
 
@@ -78,7 +74,7 @@ class SpacedDiffusion(BinomialDiffusion):
         self.timestep_map = []
         self.original_num_steps = len(kwargs["betas"])
 
-        base_diffusion = BinomialDiffusion(**kwargs)  # pylint: disable=missing-kwoa
+        base_diffusion = GaussianDiffusion(**kwargs)  # pylint: disable=missing-kwoa
         last_alpha_cumprod = 1.0
         new_betas = []
         for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod):
@@ -89,10 +85,10 @@ class SpacedDiffusion(BinomialDiffusion):
         kwargs["betas"] = np.array(new_betas)
         super().__init__(**kwargs)
 
-    def p_mean(
+    def p_mean_variance(
         self, model, *args, **kwargs
     ):  # pylint: disable=signature-differs
-        return super().p_mean(self._wrap_model(model), *args, **kwargs)
+        return super().p_mean_variance(self._wrap_model(model), *args, **kwargs)
 
     def training_losses(
         self, model, *args, **kwargs

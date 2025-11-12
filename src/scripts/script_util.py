@@ -4,9 +4,9 @@ import blobfile as bf
 
 import torch as th
 
-from diffusion import binomial_diffusion as bd
-from diffusion.respace import SpacedDiffusion, space_timesteps
-from model.unet import SegmentationModel
+from src.diffusion import binomial_diffusion as bd
+from src.diffusion.respace import SpacedDiffusion, space_timesteps
+from src.model.unet import SegmentationModel
 
 
 def model_and_diffusion_defaults():
@@ -30,6 +30,9 @@ def model_and_diffusion_defaults():
         rescale_timesteps=True,
         use_checkpoint=False,
         use_scale_shift_norm=True,
+        # IDDPM params
+        class_cond=False,
+
     )
 
 
@@ -50,6 +53,8 @@ def create_model_and_diffusion(
     rescale_timesteps,
     use_checkpoint,
     use_scale_shift_norm,
+    # IDDPM params
+    class_cond,
 ):
     model = create_model(
         image_size,
@@ -63,7 +68,7 @@ def create_model_and_diffusion(
         use_scale_shift_norm=use_scale_shift_norm,
         dropout=dropout,
     )
-    
+
     diffusion = create_binomial_diffusion(
         steps=diffusion_steps,
         noise_schedule=noise_schedule,
@@ -105,9 +110,8 @@ def create_model(
     for res in attention_resolutions.split(","):
         attention_ds.append(image_size // int(res))
 
-    out_channels=in_channels=1
-    
-    
+    out_channels = in_channels = 1
+
     model = SegmentationModel(
         in_channels=in_channels,
         img_channels=img_channels,
@@ -126,6 +130,7 @@ def create_model(
 
     return model
 
+
 def create_binomial_diffusion(
     *,
     steps=1000,
@@ -137,7 +142,7 @@ def create_binomial_diffusion(
 ):
     betas = bd.get_named_beta_schedule(noise_schedule, steps)
     if ltype == "rescale_kl":
-        loss_type =bd.LossType.RESCALED_KL
+        loss_type = bd.LossType.RESCALED_KL
     elif ltype == "kl":
         loss_type = bd.LossType.KL
     elif ltype == "bce":
@@ -192,19 +197,20 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError("boolean value expected")
-    
+
 
 def load_state_dict(path, **kwargs):
     """
     Load a PyTorch file without redundant fetches across MPI ranks.
     """
-    mpigetrank=0
-    if mpigetrank==0:
+    mpigetrank = 0
+    if mpigetrank == 0:
         with bf.BlobFile(path, "rb") as f:
             data = f.read()
     else:
         data = None
     return th.load(io.BytesIO(data), **kwargs)
+
 
 def dev():
     """

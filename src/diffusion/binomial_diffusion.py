@@ -5,8 +5,8 @@ import numpy as np
 import torch as th
 from torch.distributions.binomial import Binomial
 
-from model.basic_module import mean_flat
-from loss.losses import binomial_kl, binomial_log_likelihood
+from src.model.basic_module import mean_flat
+from src.loss.losses import binomial_kl, binomial_log_likelihood
 
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
@@ -121,7 +121,7 @@ class BinomialDiffusion:
 
         self.alphas = 1.0 - betas
         self.alphas_cumprod = np.cumprod(self.alphas, axis=0)
-    
+
     def q_mean(self, x_start, t):
         """
         Get the distribution q(x_t | x_0).
@@ -130,11 +130,11 @@ class BinomialDiffusion:
         :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
         :return: Binomial distribution parameters, of x_start's shape.
         """
-        mean = _extract_into_tensor(self.alphas_cumprod, t, x_start.shape) * x_start 
+        mean = _extract_into_tensor(self.alphas_cumprod, t, x_start.shape) * x_start
         + (1 - _extract_into_tensor(self.alphas_cumprod, t, x_start.shape)) / 2
-        
+
         return mean
-    
+
     def q_sample(self, x_start, t):
         """
         Diffuse the data for a given number of diffusion steps.
@@ -147,20 +147,22 @@ class BinomialDiffusion:
 
         mean = self.q_mean(x_start, t)
         return Binomial(1, mean).sample()
-    
+
     def q_posterior_mean(self, x_start, x_t, t):
         """
         Get the distribution q(x_{t-1} | x_t, x_0)
         """
         assert x_start.shape == x_t.shape
 
-        theta_1 = (_extract_into_tensor(self.alphas, t, x_start.shape) * (1-x_t) + (1 - _extract_into_tensor(self.alphas, t, x_start.shape)) / 2) * (_extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape) * (1-x_start) + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape)) / 2)
-        theta_2 = (_extract_into_tensor(self.alphas, t, x_start.shape) * x_t + (1 - _extract_into_tensor(self.alphas, t, x_start.shape)) / 2) * (_extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape) * x_start + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape)) / 2)
+        theta_1 = (_extract_into_tensor(self.alphas, t, x_start.shape) * (1-x_t) + (1 - _extract_into_tensor(self.alphas, t, x_start.shape)) / 2) * \
+            (_extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape) * (1-x_start) + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape)) / 2)
+        theta_2 = (_extract_into_tensor(self.alphas, t, x_start.shape) * x_t + (1 - _extract_into_tensor(self.alphas, t, x_start.shape)) / 2) * \
+            (_extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape) * x_start + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape)) / 2)
 
         posterior_mean = theta_2 / (theta_1 + theta_2)
 
         return posterior_mean
-    
+
     def p_mean(
         self, model, x, t, denoised_fn=None, model_kwargs=None
     ):
@@ -191,7 +193,7 @@ class BinomialDiffusion:
             if denoised_fn is not None:
                 x = denoised_fn(x)
             return x
-        
+
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
             pred_xstart = process_xstart(
                 self._predict_xstart_from_xprev(x_t=x, t=t, xprev=model_output)
@@ -208,34 +210,34 @@ class BinomialDiffusion:
             model_mean = self.q_posterior_mean(
                 x_start=pred_xstart, x_t=x, t=t
             )
-            model_mean = th.where((t == 0)[:,None, None, None], pred_xstart, model_mean)
+            model_mean = th.where((t == 0)[:, None, None, None], pred_xstart, model_mean)
         else:
             raise NotImplementedError(self.model_mean_type)
         return {
             "mean": model_mean,
             "pred_xstart": pred_xstart,
         }
-    
+
     def _predict_xstart_from_eps(self, x_t, t, eps):
         assert x_t.shape == eps.shape
         return (
             th.abs(x_t - eps).to(device=t.device).float()
         )
-    
+
     def _predict_xstart_from_xprev(self, x_t, t, xprev):
         assert x_t.shape == xprev.shape
         A = (_extract_into_tensor(self.alphas, t, x_t.shape) * (1-x_t) + (1 - _extract_into_tensor(self.alphas, t, x_t.shape)) / 2)
         B = (_extract_into_tensor(self.alphas, t, x_t.shape) * x_t + (1 - _extract_into_tensor(self.alphas, t, x_t.shape)) / 2)
         C = (1 - _extract_into_tensor(self.alphas_cumprod, t-1, x_t.shape)) / 2
-        numerator = A * C * xprev + B * C * (xprev -  1) + A * xprev * _extract_into_tensor(self.alphas_cumprod, t-1, x_t.shape)
-        denominator = (B  + A  * xprev - B * xprev) * _extract_into_tensor(self.alphas_cumprod, t-1, x_t.shape)
+        numerator = A * C * xprev + B * C * (xprev - 1) + A * xprev * _extract_into_tensor(self.alphas_cumprod, t-1, x_t.shape)
+        denominator = (B + A * xprev - B * xprev) * _extract_into_tensor(self.alphas_cumprod, t-1, x_t.shape)
         return (numerator / denominator)
-    
+
     def _scale_timesteps(self, t):
         if self.rescale_timesteps:
             return t.float() * (1000.0 / self.num_timesteps)
         return t
-    
+
     def p_sample(
         self, model, x, t, denoised_fn=None, model_kwargs=None,
     ):
@@ -352,7 +354,7 @@ class BinomialDiffusion:
                 )
                 yield out
                 img = out["sample"]
-    
+
     def ddim_sample(
         self,
         model,
@@ -378,8 +380,8 @@ class BinomialDiffusion:
             alpha_bar_t = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
             sigma = (1 - alpha_bar_t_1) / (1 - alpha_bar_t)
             mean = sigma * x + (alpha_bar_t_1 - sigma * alpha_bar_t) * out["pred_xstart"]
-            # sample = Binomial(1, th.clip(mean, min=0, max=1)).sample()
-            sample = Binomial(1, mean).sample()
+            sample = Binomial(1, th.clip(mean, min=0, max=1)).sample()
+            # sample = Binomial(1, mean).sample()
             return {"sample": sample, "pred_xstart": out["pred_xstart"]}
         else:
             return {"sample": out["mean"], "pred_xstart": out["pred_xstart"]}
@@ -392,7 +394,7 @@ class BinomialDiffusion:
         denoised_fn=None,
         model_kwargs=None,
         device=None,
-        progress=False,
+        progress=True,
     ):
         """
         Generate samples from the model using DDIM.
@@ -411,7 +413,7 @@ class BinomialDiffusion:
         ):
             final = sample
         return final["sample"]
-    
+
     def ddim_sample_loop_progressive(
         self,
         model,
@@ -485,7 +487,7 @@ class BinomialDiffusion:
         # otherwise return KL(q(x_{t-1}|x_t,x_0) || p(x_{t-1}|x_t))
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
-    
+
     def _prior_bpd(self, x_start):
         """
         Get the prior KL term for the variational lower-bound, measured in
@@ -503,7 +505,7 @@ class BinomialDiffusion:
             mean1=qt_mean, mean2=0.0
         )
         return mean_flat(kl_prior) / np.log(2.0)
-    
+
     def training_losses(self, model, x_start, t, model_kwargs=None):
         """
         Compute training losses for a single timestep.
@@ -558,6 +560,7 @@ class BinomialDiffusion:
             raise NotImplementedError(self.loss_type)
 
         return terms
+
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
     """
