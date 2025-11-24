@@ -1,7 +1,11 @@
-./data/
+data/
 OCTA500*/
 .DS_Store
-
+figures/
+results/
+samples/
+workdir/
+.vscode/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -218,3 +222,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+src/scripts/script_util.py
+.gitignore

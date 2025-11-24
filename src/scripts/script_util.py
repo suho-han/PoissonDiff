@@ -1,10 +1,11 @@
-import io
 import argparse
-import blobfile as bf
+import io
 
+import blobfile as bf
 import torch as th
 
 from src.diffusion import binomial_diffusion as bd
+from src.diffusion import prior_binomial_diffusion as pbd
 from src.diffusion.respace import SpacedDiffusion, space_timesteps
 from src.model.unet import SegmentationModel
 
@@ -14,7 +15,7 @@ def model_and_diffusion_defaults():
     Defaults for image training.
     """
     return dict(
-        image_size=128,
+        image_size=256,
         num_channels=128,
         num_res_blocks=2,
         num_heads=4,
@@ -25,8 +26,8 @@ def model_and_diffusion_defaults():
         diffusion_steps=1000,
         noise_schedule="linear",
         timestep_respacing="",
-        ltype="bce",  # bce, kl, mix
-        mean_type="xstart",
+        ltype="mix",  # bce, kl, mix
+        mean_type="ystart",
         rescale_timesteps=True,
         use_checkpoint=False,
         use_scale_shift_norm=True,
@@ -69,7 +70,7 @@ def create_model_and_diffusion(
         dropout=dropout,
     )
 
-    diffusion = create_binomial_diffusion(
+    diffusion = create_priorbinomial_diffusion(
         steps=diffusion_steps,
         noise_schedule=noise_schedule,
         ltype=ltype,
@@ -131,34 +132,33 @@ def create_model(
     return model
 
 
-def create_binomial_diffusion(
-    *,
+def create_priorbinomial_diffusion(
     steps=1000,
     noise_schedule="linear",
     ltype="bce",
-    mean_type="xstart",
+    mean_type="ystart",
     rescale_timesteps=False,
     timestep_respacing="",
 ):
-    betas = bd.get_named_beta_schedule(noise_schedule, steps)
+    betas = pbd.get_named_beta_schedule(noise_schedule, steps)
     if ltype == "rescale_kl":
-        loss_type = bd.LossType.RESCALED_KL
+        loss_type = pbd.LossType.RESCALED_KL
     elif ltype == "kl":
-        loss_type = bd.LossType.KL
+        loss_type = pbd.LossType.KL
     elif ltype == "bce":
-        loss_type = bd.LossType.BCE
+        loss_type = pbd.LossType.BCE
     elif ltype == "mix":
-        loss_type = bd.LossType.MIX
+        loss_type = pbd.LossType.MIX
     else:
         raise NotImplementedError(f"unknown LossType: {ltype}")
     if not timestep_respacing:
         timestep_respacing = [steps]
-    if mean_type == "xstart":
-        model_mean = bd.ModelMeanType.START_X
+    if mean_type == "ystart":
+        model_mean = pbd.ModelMeanType.START_Y
     elif mean_type == "epsilon":
-        model_mean = bd.ModelMeanType.EPSILON
+        model_mean = pbd.ModelMeanType.EPSILON
     elif mean_type == "previous":
-        model_mean = bd.ModelMeanType.PREVIOUS_X
+        model_mean = pbd.ModelMeanType.PREVIOUS_Y
     else:
         raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
 

@@ -1,7 +1,7 @@
 import numpy as np
 import torch as th
 
-from src.diffusion.binomial_diffusion import BinomialDiffusion
+from src.diffusion.prior_binomial_diffusion import PriorBinomialDiffusion
 
 
 def space_timesteps(num_timesteps, section_counts):
@@ -64,7 +64,7 @@ def space_timesteps(num_timesteps, section_counts):
     return set(all_steps)
 
 
-class SpacedDiffusion(BinomialDiffusion):
+class SpacedDiffusion(PriorBinomialDiffusion):
     """
     A diffusion process which can skip steps in a base diffusion process.
 
@@ -78,7 +78,7 @@ class SpacedDiffusion(BinomialDiffusion):
         self.timestep_map = []
         self.original_num_steps = len(kwargs["betas"])
 
-        base_diffusion = BinomialDiffusion(**kwargs)  # pylint: disable=missing-kwoa
+        base_diffusion = PriorBinomialDiffusion(**kwargs)  # pylint: disable=missing-kwoa
         last_alpha_cumprod = 1.0
         new_betas = []
         for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod):

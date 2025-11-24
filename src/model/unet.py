@@ -1,22 +1,12 @@
-from abc import abstractmethod
-
 import math
+from abc import abstractmethod
 
 import numpy as np
 import torch as th
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
-from .basic_module import (
-    conv_nd,
-    avg_pool_nd,
-    normalization,
-    SiLU,
-    linear,
-    zero_module,
-    checkpoint,
-    timestep_embedding,
-)
+from .basic_module import SiLU, avg_pool_nd, checkpoint, conv_nd, linear, normalization, timestep_embedding, zero_module
 
 
 class TimestepBlock(nn.Module):
@@ -487,6 +477,6 @@ class SegmentationModel(UNetModel):
     def __init__(self, in_channels, img_channels, *args, **kwargs):
         super().__init__(in_channels + img_channels, *args, **kwargs)
 
-    def forward(self, x, timesteps, img, **kwargs):
-        x = th.cat([x, img], dim=1)
-        return super().forward(x, timesteps, **kwargs)
+    def forward(self, x, timesteps, prior, **kwargs):
+        x = th.cat([x, prior], dim=1)
+        return super().forward(x, timesteps)

@@ -12,7 +12,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--data_dir",
-                "data/OCTA500_3M",
+                "data/OCTA500_6M",
                 "--image_size",
                 "256",
                 "--num_channels",
@@ -28,7 +28,9 @@
                 "--batch_size",
                 "4",
                 "--prior_model",
-                "FRUnet"
+                "FRUnet",
+                "--gpu",
+                "1"
             ],
             "env": {}
         },
@@ -39,10 +41,28 @@
             "program": "image_sample.py",
             "console": "integratedTerminal",
             "args": [
-                "--dataset", "OCTA500_3M", "--data_dir", "data/OCTA500_3M" ,"--model_path", "OCTA500_3M-FRUnet/ema_0.9999_200000.pt",
-                "--image_size", "256", "--num_channels", "128", "--num_res_blocks", "3",
-                "--diffusion_steps", "1000", "--noise_schedule", "linear",
-                "--batch_size", "8", "--prior_model", "FRUnet"
+                "--dataset",
+                "OCTA500_6M",
+                "--data_dir",
+                "data/OCTA500_6M",
+                "--model_path",
+                "workdir/OCTA500_6M-FRUnet/ema_0.9999_050000.pt",
+                "--image_size",
+                "256",
+                "--num_channels",
+                "128",
+                "--num_res_blocks",
+                "3",
+                "--diffusion_steps",
+                "1000",
+                "--noise_schedule",
+                "linear",
+                "--batch_size",
+                "2",
+                "--prior_model",
+                "FRUnet",
+                "--gpu",
+                "0"
             ],
             "env": {}
         }

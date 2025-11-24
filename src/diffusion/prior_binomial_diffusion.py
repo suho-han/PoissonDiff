@@ -5,7 +5,7 @@ import numpy as np
 import torch as th
 from torch.distributions.binomial import Binomial
 
-from src.loss.losses import binomial_kl, binomial_log_likelihood
+from src.loss.losses import binomial_kl, binomial_log_likelihood, focal_loss
 from src.model.basic_module import mean_flat
 
 
@@ -72,8 +72,8 @@ class ModelMeanType(enum.Enum):
     Which type of output the model predicts.
     """
 
-    PREVIOUS_X = enum.auto()  # the model predicts x_{t-1}
-    START_X = enum.auto()  # the model predicts x_0
+    PREVIOUS_Y = enum.auto()  # the model predicts y_{t-1}
+    START_Y = enum.auto()  # the model predicts y_0
     EPSILON = enum.auto()  # the model predicts epsilon
 
 
@@ -87,7 +87,7 @@ class LossType(enum.Enum):
         return self == LossType.KL or self == LossType.RESCALED_KL
 
 
-class BinomialDiffusion:
+class PriorBinomialDiffusion:
     """
     Utilities for training and sampling diffusion models.
 
@@ -122,116 +122,111 @@ class BinomialDiffusion:
         self.alphas = 1.0 - betas
         self.alphas_cumprod = np.cumprod(self.alphas, axis=0)
 
-    def q_mean(self, x_start, t):
+    def q_mean(self, y_start, p, t):
         """
-        Get the distribution q(x_t | x_0).
+        Get the distribution q(y_t | y_start, f(x)).
 
-        :param x_start: the [N x C x ...] tensor of noiseless inputs.
+        :param y_start: the [N x C x ...] tensor of noiseless inputs.
+        :param p: the output of a segmentor (prior)
         :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
-        :return: Binomial distribution parameters, of x_start's shape.
+        :return: Binomial distribution parameters, of y_start's shape.
         """
-        mean = _extract_into_tensor(self.alphas_cumprod, t, x_start.shape) * x_start
-        + (1 - _extract_into_tensor(self.alphas_cumprod, t, x_start.shape)) / 2
+        mean = _extract_into_tensor(self.alphas_cumprod, t, y_start.shape) * y_start \
+            + (1 - _extract_into_tensor(self.alphas_cumprod, t, y_start.shape)) * p
 
         return mean
 
-    def q_sample(self, x_start, t):
+    def q_sample(self, y_start, p, t):
         """
         Diffuse the data for a given number of diffusion steps.
-        In other words, sample from q(x_t | x_0).
+        In other words, sample from q(y_t | y_start, f(x)).
 
-        :param x_start: the initial data batch.
+        :param y_start: the initial data batch.
         :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
-        :return: A noisy version of x_start.
+        :return: A noisy version of y_start.
         """
 
-        mean = self.q_mean(x_start, t)
+        mean = self.q_mean(y_start, p, t)
         return Binomial(1, mean).sample()
 
-    def q_posterior_mean(self, x_start, x_t, t):
+    def q_posterior_mean(self, y_start, y_t, p, t):
         """
-        Get the distribution q(x_{t-1} | x_t, x_0)
+        Get the distribution q(y_{t-1} | y_t, y_start, f(x))
         """
-        assert x_start.shape == x_t.shape
+        assert y_start.shape == y_t.shape
 
-        theta_1 = (_extract_into_tensor(self.alphas, t, x_start.shape) * (1-x_t) + (1 - _extract_into_tensor(self.alphas, t, x_start.shape)) / 2) * \
-            (_extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape) * (1-x_start) + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape)) / 2)
-        theta_2 = (_extract_into_tensor(self.alphas, t, x_start.shape) * x_t + (1 - _extract_into_tensor(self.alphas, t, x_start.shape)) / 2) * \
-            (_extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape) * x_start + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, x_start.shape)) / 2)
+        theta_1 = (_extract_into_tensor(self.alphas, t, y_start.shape) * (1-y_t) + (1 - _extract_into_tensor(self.alphas, t, y_start.shape)) * (th.abs(1-y_t-p))) * \
+            (_extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape) * (1-y_start) + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape)) * (1-p))
+        theta_2 = (_extract_into_tensor(self.alphas, t, y_start.shape) * y_t + (1 - _extract_into_tensor(self.alphas, t, y_start.shape)) * (th.abs(1-y_t-p))) * \
+            (_extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape) * y_start + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape)) * p)
 
         posterior_mean = theta_2 / (theta_1 + theta_2)
 
         return posterior_mean
 
     def p_mean(
-        self, model, x, t, denoised_fn=None, model_kwargs=None
+        self, model, y, t, denoised_fn=None, model_kwargs=None
     ):
         """
-        Apply the model to get p(x_{t-1} | x_t), as well as a prediction of
-        the initial x, x_0.
+        Apply the model to get p(y_{t-1} | y_t, f(x)), as well as a prediction of
+        the initial y, i.e., y_0.
 
         :param model: the model, which takes a signal and a batch of timesteps
                       as input.
-        :param x: the [N x C x ...] tensor at time t.
+        :param y: the [N x C x ...] tensor at time t.
         :param t: a 1-D Tensor of timesteps.
         :param denoised_fn: if not None, a function which applies to the
-            x_start prediction before it is used to sample.
+            y_start prediction before it is used to sample.
         :param model_kwargs: if not None, a dict of extra keyword arguments to
             pass to the model. This can be used for conditioning.
         :return: a dict with the following keys:
                  - 'mean': the model mean output.
-                 - 'pred_xstart': the prediction for x_0.
+                 - 'pred_ystart': the prediction for y_0.
         """
         if model_kwargs is None:
             model_kwargs = {}
 
-        B, C = x.shape[:2]
+        B = y.shape[0]
         assert t.shape == (B,)
-        model_output = model(x, self._scale_timesteps(t), **model_kwargs)
+        model_output = model(y, self._scale_timesteps(t), **model_kwargs)
 
-        def process_xstart(x):
+        def process_ystart(y):
             if denoised_fn is not None:
-                x = denoised_fn(x)
-            return x
+                y = denoised_fn(y)
+            return y
 
-        if self.model_mean_type == ModelMeanType.PREVIOUS_X:
-            pred_xstart = process_xstart(
-                self._predict_xstart_from_xprev(x_t=x, t=t, xprev=model_output)
+        if self.model_mean_type == ModelMeanType.PREVIOUS_Y:
+            pred_ystart = process_ystart(
+                self._predict_ystart_from_yprev(y_t=y, t=t, yprev=model_output)
             )
             model_mean = model_output
 
-        elif self.model_mean_type in [ModelMeanType.START_X, ModelMeanType.EPSILON]:
-            if self.model_mean_type == ModelMeanType.START_X:
-                pred_xstart = process_xstart(model_output)
+        elif self.model_mean_type in [ModelMeanType.START_Y, ModelMeanType.EPSILON]:
+            if self.model_mean_type == ModelMeanType.START_Y:
+                pred_ystart = process_ystart(model_output)
             else:
-                pred_xstart = process_xstart(
-                    self._predict_xstart_from_eps(x_t=x, t=t, eps=model_output)
+                pred_ystart = process_ystart(
+                    self._predict_ystart_from_eps(y_t=y, t=t, eps=model_output)
                 )
             model_mean = self.q_posterior_mean(
-                x_start=pred_xstart, x_t=x, t=t
+                y_start=pred_ystart, y_t=y, p=model_kwargs["prior"], t=t
             )
-            model_mean = th.where((t == 0)[:, None, None, None], pred_xstart, model_mean)
+            model_mean = th.where((t == 0)[:, None, None, None], pred_ystart, model_mean)
         else:
             raise NotImplementedError(self.model_mean_type)
         return {
             "mean": model_mean,
-            "pred_xstart": pred_xstart,
+            "pred_ystart": pred_ystart,
         }
 
-    def _predict_xstart_from_eps(self, x_t, t, eps):
-        assert x_t.shape == eps.shape
+    def _predict_ystart_from_eps(self, y_t, t, eps):
+        assert y_t.shape == eps.shape
         return (
-            th.abs(x_t - eps).to(device=t.device).float()
+            th.abs(y_t - eps).to(device=t.device).float()
         )
 
-    def _predict_xstart_from_xprev(self, x_t, t, xprev):
-        assert x_t.shape == xprev.shape
-        A = (_extract_into_tensor(self.alphas, t, x_t.shape) * (1-x_t) + (1 - _extract_into_tensor(self.alphas, t, x_t.shape)) / 2)
-        B = (_extract_into_tensor(self.alphas, t, x_t.shape) * x_t + (1 - _extract_into_tensor(self.alphas, t, x_t.shape)) / 2)
-        C = (1 - _extract_into_tensor(self.alphas_cumprod, t-1, x_t.shape)) / 2
-        numerator = A * C * xprev + B * C * (xprev - 1) + A * xprev * _extract_into_tensor(self.alphas_cumprod, t-1, x_t.shape)
-        denominator = (B + A * xprev - B * xprev) * _extract_into_tensor(self.alphas_cumprod, t-1, x_t.shape)
-        return (numerator / denominator)
+    def _predict_ystart_from_yprev(self, y_t, t, yprev):
+        raise NotImplementedError
 
     def _scale_timesteps(self, t):
         if self.rescale_timesteps:
@@ -239,36 +234,34 @@ class BinomialDiffusion:
         return t
 
     def p_sample(
-        self, model, x, t, denoised_fn=None, model_kwargs=None,
+        self, model, y, t, denoised_fn=None, model_kwargs=None
     ):
         """
-        Sample x_{t-1} from the model at the given timestep.
+        Sample y_{t-1} from the model at the given timestep.
 
         :param model: the model to sample from.
-        :param x: the current tensor at x_{t-1}.
+        :param y: the current tensor at y_{t-1}.
         :param t: the value of t, starting at 0 for the first diffusion step.
         :param denoised_fn: if not None, a function which applies to the
-            x_start prediction before it is used to sample.
+            y_start prediction before it is used to sample.
         :param model_kwargs: if not None, a dict of extra keyword arguments to
             pass to the model. This can be used for conditioning.
         :return: a dict containing the following keys:
                  - 'sample': a random sample from the model.
-                 - 'pred_xstart': a prediction of x_0.
+                 - 'pred_ystart': a prediction of y_0.
         """
         out = self.p_mean(
             model,
-            x,
+            y,
             t,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
-
-        sample = Binomial(1, out["mean"]).sample()
+        sample = Binomial(1, th.clip(out["mean"], min=0, max=1)).sample()
         if t[0] != 0:
-            return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+            return {"sample": sample, "pred_ystart": out["pred_ystart"]}
         else:
-            # return {"sample": sample, "pred_xstart": out["pred_xstart"]}
-            return {"sample": out["mean"], "pred_xstart": out["pred_xstart"]}
+            return {"sample": out["mean"], "pred_ystart": out["pred_ystart"]}
 
     def p_sample_loop(
         self,
@@ -279,6 +272,7 @@ class BinomialDiffusion:
         model_kwargs=None,
         device=None,
         progress=False,
+        return_intermediates=False,
     ):
         """
         Generate samples from the model.
@@ -288,15 +282,19 @@ class BinomialDiffusion:
         :param noise: if specified, the noise from the encoder to sample.
                       Should be of the same shape as `shape`.
         :param denoised_fn: if not None, a function which applies to the
-            x_start prediction before it is used to sample.
+            y_start prediction before it is used to sample.
         :param model_kwargs: if not None, a dict of extra keyword arguments to
             pass to the model. This can be used for conditioning.
         :param device: if specified, the device to create the samples on.
                        If not specified, use a model parameter's device.
         :param progress: if True, show a tqdm progress bar.
-        :return: a non-differentiable batch of samples.
+        :param return_intermediates: if True, also return a list of per-step
+            samples collected during the diffusion loop.
+        :return: the final non-differentiable batch of samples, or a tuple
+            (final_sample, intermediates) when return_intermediates is True.
         """
         final = None
+        intermediates = [] if return_intermediates else None
         for sample in self.p_sample_loop_progressive(
             model,
             shape,
@@ -307,6 +305,10 @@ class BinomialDiffusion:
             progress=progress,
         ):
             final = sample
+            if intermediates is not None:
+                intermediates.append(sample["sample"])
+        if return_intermediates:
+            return final["sample"], intermediates
         return final["sample"]
 
     def p_sample_loop_progressive(
@@ -333,17 +335,15 @@ class BinomialDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = Binomial(1, th.ones(*shape)/2).sample().to(device)
+            img = Binomial(1, model_kwargs["prior"]).sample().to(device)
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
-            # Lazy import so that we don't depend on tqdm.
             from tqdm.auto import tqdm
-
             indices = tqdm(indices)
 
         for i in indices:
-            t = th.tensor([i] * shape[0], device=device)
+            t = th.tensor([i] * img.shape[0], device=device)
             with th.no_grad():
                 out = self.p_sample(
                     model,
@@ -358,33 +358,31 @@ class BinomialDiffusion:
     def ddim_sample(
         self,
         model,
-        x,
+        y,
         t,
         denoised_fn=None,
         model_kwargs=None,
     ):
         """
-        Sample x_{t-1} from the model using DDIM.
-
+        Sample y_{t-1} from the model using DDIM.
         Same usage as p_sample().
         """
         out = self.p_mean(
             model,
-            x,
+            y,
             t,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
         if t[0] != 0:
-            alpha_bar_t_1 = _extract_into_tensor(self.alphas_cumprod, t-1, x.shape)
-            alpha_bar_t = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
+            alpha_bar_t_1 = _extract_into_tensor(self.alphas_cumprod, t-1, y.shape)
+            alpha_bar_t = _extract_into_tensor(self.alphas_cumprod, t, y.shape)
             sigma = (1 - alpha_bar_t_1) / (1 - alpha_bar_t)
-            mean = sigma * x + (alpha_bar_t_1 - sigma * alpha_bar_t) * out["pred_xstart"]
+            mean = sigma * y + (alpha_bar_t_1 - sigma * alpha_bar_t) * out["pred_ystart"]
             sample = Binomial(1, th.clip(mean, min=0, max=1)).sample()
-            # sample = Binomial(1, mean).sample()
-            return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+            return {"sample": sample, "pred_ystart": out["pred_ystart"]}
         else:
-            return {"sample": out["mean"], "pred_xstart": out["pred_xstart"]}
+            return {"sample": out["mean"], "pred_ystart": out["pred_ystart"]}
 
     def ddim_sample_loop(
         self,
@@ -394,15 +392,16 @@ class BinomialDiffusion:
         denoised_fn=None,
         model_kwargs=None,
         device=None,
-        progress=True,
+        progress=False,
+        return_intermediates=False,
     ):
         """
         Generate samples from the model using DDIM.
-
         Same usage as p_sample_loop().
         """
         final = None
-        for sample in self.ddim_sample_loop_progressive(
+        intermediates = [] if return_intermediates else None
+        for i, sample in enumerate(self.ddim_sample_loop_progressive(
             model,
             shape,
             noise=noise,
@@ -410,8 +409,12 @@ class BinomialDiffusion:
             model_kwargs=model_kwargs,
             device=device,
             progress=progress,
-        ):
+        )):
             final = sample
+            if intermediates is not None and i % 50 == 0:
+                intermediates.append(sample["sample"])
+        if return_intermediates:
+            return final["sample"], intermediates
         return final["sample"]
 
     def ddim_sample_loop_progressive(
@@ -427,7 +430,6 @@ class BinomialDiffusion:
         """
         Use DDIM to sample from the model and yield intermediate samples from
         each timestep of DDIM.
-
         Same usage as p_sample_loop_progressive().
         """
         if device is None:
@@ -436,17 +438,19 @@ class BinomialDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = Binomial(1, th.ones(*shape)/2).sample().to(device)
+            img = Binomial(1, model_kwargs["prior"]).sample().to(device)
+
+        # Yield initial sample
+        yield {"sample": img, "pred_ystart": None}
+
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
-            # Lazy import so that we don't depend on tqdm.
             from tqdm.auto import tqdm
-
             indices = tqdm(indices)
 
         for i in indices:
-            t = th.tensor([i] * shape[0], device=device)
+            t = th.tensor([i] * img.shape[0], device=device)
             with th.no_grad():
                 out = self.ddim_sample(
                     model,
@@ -459,7 +463,7 @@ class BinomialDiffusion:
                 img = out["sample"]
 
     def _vb_terms_bpd(
-        self, model, x_start, x_t, t, model_kwargs=None
+        self, model, y_start, y_t, t, model_kwargs=None
     ):
         """
         Get a term for the variational lower-bound.
@@ -469,49 +473,27 @@ class BinomialDiffusion:
 
         :return: a dict with the following keys:
                  - 'output': a shape [N] tensor of NLLs or KLs.
-                 - 'pred_xstart': the x_0 predictions.
+                 - 'pred_ystart': the y_0 predictions.
         """
-        true_mean = self.q_posterior_mean(x_start=x_start, x_t=x_t, t=t)
-        out = self.p_mean(
-            model, x_t, t, model_kwargs=model_kwargs
-        )
+        true_mean = self.q_posterior_mean(y_start=y_start, y_t=y_t, p=model_kwargs["prior"], t=t)
+        out = self.p_mean(model, y_t, t, model_kwargs=model_kwargs)
         kl = binomial_kl(true_mean, out["mean"])
 
         kl = mean_flat(kl) / np.log(2.0)
 
-        decoder_nll = -binomial_log_likelihood(x_start, means=out["mean"])
-        assert decoder_nll.shape == x_start.shape
+        decoder_nll = -binomial_log_likelihood(y_start, means=out["mean"])
+        assert decoder_nll.shape == y_start.shape
         decoder_nll = mean_flat(decoder_nll) / np.log(2.0)
 
-        # At the first timestep return the decoder NLL,
-        # otherwise return KL(q(x_{t-1}|x_t,x_0) || p(x_{t-1}|x_t))
         output = th.where((t == 0), decoder_nll, kl)
-        return {"output": output, "pred_xstart": out["pred_xstart"]}
+        return {"output": output, "pred_ystart": out["pred_ystart"]}
 
-    def _prior_bpd(self, x_start):
-        """
-        Get the prior KL term for the variational lower-bound, measured in
-        bits-per-dim.
-
-        This term can't be optimized, as it only depends on the encoder.
-
-        :param x_start: the [N x C x ...] tensor of inputs.
-        :return: a batch of [N] KL values (in bits), one per batch element.
-        """
-        batch_size = x_start.shape[0]
-        t = th.tensor([self.num_timesteps - 1] * batch_size, device=x_start.device)
-        qt_mean = self.q_mean(x_start, t)
-        kl_prior = binomial_kl(
-            mean1=qt_mean, mean2=0.0
-        )
-        return mean_flat(kl_prior) / np.log(2.0)
-
-    def training_losses(self, model, x_start, t, model_kwargs=None):
+    def training_losses(self, model, y_start, t, model_kwargs=None, lambda_focal=1):
         """
         Compute training losses for a single timestep.
 
         :param model: the model to evaluate loss on.
-        :param x_start: the [N x C x ...] tensor of inputs.
+        :param y_start: the [N x C x ...] tensor of inputs.
         :param t: a batch of timestep indices.
         :param model_kwargs: if not None, a dict of extra keyword arguments to
             pass to the model. This can be used for conditioning.
@@ -520,41 +502,41 @@ class BinomialDiffusion:
         """
         if model_kwargs is None:
             model_kwargs = {}
-        x_t = self.q_sample(x_start, t, model_kwargs)
+        y_t = self.q_sample(y_start, model_kwargs["prior"], t)
 
         terms = {}
 
         if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL or self.loss_type == LossType.MIX:
             terms["loss"] = self._vb_terms_bpd(
                 model=model,
-                x_start=x_start,
-                x_t=x_t,
+                y_start=y_start,
+                y_t=y_t,
                 t=t,
                 model_kwargs=model_kwargs,
-            )["output"]
+            )["output"]  # KL
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
             if self.loss_type == LossType.MIX:
                 target = {
-                    ModelMeanType.PREVIOUS_X: self.q_posterior_mean(
-                        x_start=x_start, x_t=x_t, t=t
+                    ModelMeanType.PREVIOUS_Y: self.q_posterior_mean(
+                        y_start=y_start, y_t=y_t, p=model_kwargs["prior"], t=t
                     ),
-                    ModelMeanType.START_X: x_start,
-                    ModelMeanType.EPSILON: self._predict_xstart_from_eps(x_t=x_t, t=t, eps=x_start),
+                    ModelMeanType.START_Y: y_start,
+                    ModelMeanType.EPSILON: self._predict_ystart_from_eps(y_t=y_t, t=t, eps=y_start),
                 }[self.model_mean_type]
-                model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
-                terms["bce"] = mean_flat(-binomial_log_likelihood(target, means=model_output)) / np.log(2.0)
+                model_output = model(y_t, self._scale_timesteps(t), **model_kwargs)
+                terms["focal"] = lambda_focal * focal_loss(model_output, target) / np.log(2.0)
                 terms["vb"] = terms["loss"]
-                terms["loss"] = terms["vb"] + terms["bce"]
+                terms["loss"] = terms["vb"] + terms["focal"]
         elif self.loss_type == LossType.BCE:
             target = {
-                ModelMeanType.PREVIOUS_X: self.q_posterior_mean(
-                    x_start=x_start, x_t=x_t, t=t
+                ModelMeanType.PREVIOUS_Y: self.q_posterior_mean(
+                    y_start=y_start, y_t=y_t, p=model_kwargs["prior"], t=t
                 ),
-                ModelMeanType.START_X: x_start,
-                ModelMeanType.EPSILON: self._predict_xstart_from_eps(x_t=x_t, t=t, eps=x_start),
+                ModelMeanType.START_Y: y_start,
+                ModelMeanType.EPSILON: self._predict_ystart_from_eps(y_t=y_t, t=t, eps=y_start),
             }[self.model_mean_type]
-            model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
+            model_output = model(y_t, self._scale_timesteps(t), **model_kwargs)
             terms["loss"] = mean_flat(-binomial_log_likelihood(target, means=model_output)) / np.log(2.0)
         else:
             raise NotImplementedError(self.loss_type)

@@ -1,12 +1,13 @@
 import os
 import random
-from PIL import Image
+
 import blobfile as bf
-from mpi4py import MPI
 import numpy as np
-from torch.utils.data import DataLoader, Dataset
-from natsort import natsorted
 import torchvision.transforms as transforms
+from mpi4py import MPI
+from natsort import natsorted
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
 
 
 def _load_pil_image(path):
@@ -49,14 +50,17 @@ def load_data(
     )
     if deterministic:
         loader = DataLoader(
-            dataset, batch_size=batch_size, shuffle=False, num_workers=1, drop_last=True
+            dataset, batch_size=batch_size, shuffle=False, num_workers=1, drop_last=False
         )
     else:
         loader = DataLoader(
-            dataset, batch_size=batch_size, shuffle=True, num_workers=1, drop_last=True
+            dataset, batch_size=batch_size, shuffle=True, num_workers=1, drop_last=False
         )
-    while True:
-        yield from loader
+    # Return the DataLoader. Callers can create an iterator from it.
+    # Training code (`TrainLoop`) handles StopIteration and will
+    # reinitialize the iterator to loop over epochs; sampling/eval
+    # code can iterate once and then finish.
+    return loader
 
 
 class ImageDataset(Dataset):
@@ -123,14 +127,15 @@ class ImageDataset(Dataset):
 
         arr_target = np.expand_dims(arr_target, axis=0)
         arr_input = np.expand_dims(arr_input, axis=0)
-        arr_image = np.transpose(arr_image, [2, 0, 1])
+        arr_image = np.transpose(arr_image[:, :, 0], [1, 0])
+        arr_image = np.expand_dims(arr_image, axis=0)
 
         # Normalize to float32 in range [0, 1]
         arr_target = arr_target.astype(np.float32) / 255.0
         arr_input = arr_input.astype(np.float32) / 255.0
         arr_image = arr_image.astype(np.float32) / 255.0
 
-        return arr_target, arr_input, arr_image
+        return arr_input, arr_target, arr_image  # input, target, image
 
 
 if __name__ == '__main__':
@@ -148,7 +153,8 @@ if __name__ == '__main__':
             deterministic=True
         )
 
-        inputs, targets, images = next(data_loader)
+        data_iter = iter(data_loader)
+        inputs, targets, images = next(data_iter)
 
         print(f"\nSuccessfully loaded one batch of data.")
         print(f"Batch size: {batch_size}")

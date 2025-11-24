@@ -10,19 +10,11 @@ import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import AdamW
 
-from src.training import dist_util
-from src.loggings import logger
-
-from src.model.fp16_util import (
-    make_master_params,
-    master_params_to_model_params,
-    model_grads_to_master_grads,
-    unflatten_master_params,
-    zero_grad,
-)
-
-from src.model.basic_module import update_ema
 from src.diffusion.resample import LossAwareSampler, UniformSampler
+from src.loggings import logger
+from src.model.basic_module import update_ema
+from src.model.fp16_util import make_master_params, master_params_to_model_params, model_grads_to_master_grads, unflatten_master_params, zero_grad
+from src.training import dist_util
 
 # For ImageNet experiments, this was a good default value.
 # We found that the lg_loss_scale quickly climbed to
@@ -82,7 +74,7 @@ class TrainLoop:
         self.master_params = self.model_params
         self.lg_loss_scale = INITIAL_LOG_LOSS_SCALE
         self.sync_cuda = th.cuda.is_available()
-        
+
         self.output_dir = output_dir
 
         self._load_and_sync_parameters()
@@ -175,20 +167,20 @@ class TrainLoop:
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
-            if self.step >= step_limit:
+            if self.step + self.resume_step > step_limit:
                 # step_limit을 넘어가면 학습 멈추기
                 return
             try:
-                batch, cond, _ = next(data_iter)
+                input, target, image = next(data_iter)
             except StopIteration:
                 # StopIteration is thrown if dataset ends
                 # reinitialize data loader
                 data_iter = iter(self.dataloader)
-                batch, cond, _ = next(data_iter)
-            self.run_step(batch, cond)
+                input, target, image = next(data_iter)
+            self.run_step(input, target, image)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
-                logger.log(f"Step {self.step} done in {time.time() - start_time:.2f} sec")
+                logger.log(f"{self.step}steps done in {time.time() - start_time:.2f} sec")
             if self.step % self.save_interval == 0:
                 self.save()
             self.step += 1
@@ -196,20 +188,22 @@ class TrainLoop:
         if (self.step - 1) % self.save_interval != 0:
             self.save()
 
-    def run_step(self, batch, cond):
-        self.forward_backward(batch, cond)
+    def run_step(self,  input, target, image):
+        self.forward_backward(input, target, image)
         if self.use_fp16:
             self.optimize_fp16()
         else:
             self.optimize_normal()
         self.log_step()
 
-    def forward_backward(self, batch, cond):
+    def forward_backward(self, input, target, image):
         zero_grad(self.model_params)
-        for i in range(0, batch.shape[0], self.microbatch):
-            micro = {"img": batch[i: i + self.microbatch].to(dist_util.dev())}
-            micro_cond = cond[i: i + self.microbatch].to(dist_util.dev())
-            last_batch = (i + self.microbatch) >= batch.shape[0]
+        for i in range(0, input.shape[0], self.microbatch):
+            micro = {"img": image[i: i + self.microbatch].to(dist_util.dev()),
+                     "prior": input[i: i + self.microbatch].to(dist_util.dev())
+                     }
+            micro_cond = target[i: i + self.microbatch].to(dist_util.dev())
+            last_batch = (i + self.microbatch) >= target.shape[0]
             t, weights = self.schedule_sampler.sample(micro_cond.shape[0], dist_util.dev())
 
             compute_losses = functools.partial(
