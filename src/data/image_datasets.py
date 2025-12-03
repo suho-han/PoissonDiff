@@ -96,13 +96,12 @@ class ImageDataset(Dataset):
         pil_input = _load_pil_image(paths["input"]).convert("L")
         pil_target = _load_pil_image(paths["target"]).convert("L")
 
-        resize = transforms.Resize((self.resolution, self.resolution), interpolation=Image.BICUBIC)
-        pil_image = resize(pil_image)
-        pil_input = resize(pil_input)
-        pil_target = resize(pil_target)
-
         # train transforms
         if self.mode == 'train':
+            resize = transforms.Resize((self.resolution, self.resolution), interpolation=Image.BICUBIC)
+            pil_image = resize(pil_image)
+            pil_input = resize(pil_input)
+            pil_target = resize(pil_target)
             # get random parameters
             # limit rotations to multiples of 90 degrees to avoid interpolation artifacts
             angle = random.choice([0, 90, 180, 270])
@@ -127,11 +126,11 @@ class ImageDataset(Dataset):
 
         arr_target = np.expand_dims(arr_target, axis=0)
         arr_input = np.expand_dims(arr_input, axis=0)
-        arr_image = np.transpose(arr_image[:, :, 0], [1, 0])
-        arr_image = np.expand_dims(arr_image, axis=0)
+        arr_image = np.expand_dims(arr_image[:, :, 0], axis=0)
 
         # Normalize to float32 in range [0, 1]
-        arr_target = arr_target.astype(np.float32) / 255.0
+        arr_target = arr_target.astype(np.float32) / 255.0 > 0.5
+        arr_target = arr_target.astype(np.float32)
         arr_input = arr_input.astype(np.float32) / 255.0
         arr_image = arr_image.astype(np.float32) / 255.0
 

@@ -5,6 +5,7 @@ import blobfile as bf
 import torch as th
 
 from src.diffusion import binomial_diffusion as bd
+from src.diffusion import gaussian_diffusion as gd
 from src.diffusion import prior_binomial_diffusion as pbd
 from src.diffusion.respace import SpacedDiffusion, space_timesteps
 from src.model.unet import SegmentationModel
@@ -31,6 +32,7 @@ def model_and_diffusion_defaults():
         rescale_timesteps=True,
         use_checkpoint=False,
         use_scale_shift_norm=True,
+        diffusion_type="priorbinomial",
         # IDDPM params
         class_cond=False,
 
@@ -54,8 +56,9 @@ def create_model_and_diffusion(
     rescale_timesteps,
     use_checkpoint,
     use_scale_shift_norm,
+    diffusion_type,
     # IDDPM params
-    class_cond,
+    class_cond=False,
 ):
     model = create_model(
         image_size,
@@ -70,14 +73,34 @@ def create_model_and_diffusion(
         dropout=dropout,
     )
 
-    diffusion = create_priorbinomial_diffusion(
-        steps=diffusion_steps,
-        noise_schedule=noise_schedule,
-        ltype=ltype,
-        mean_type=mean_type,
-        rescale_timesteps=rescale_timesteps,
-        timestep_respacing=timestep_respacing,
-    )
+    if diffusion_type == "priorbinomial" or diffusion_type == "binomial" or diffusion_type == "bernoulli":
+        diffusion = create_priorbinomial_diffusion(
+            steps=diffusion_steps,
+            noise_schedule=noise_schedule,
+            ltype=ltype,
+            mean_type=mean_type,
+            rescale_timesteps=rescale_timesteps,
+            timestep_respacing=timestep_respacing,
+        )
+    elif diffusion_type == "gaussian":
+        diffusion = create_gaussian_diffusion(
+            steps=diffusion_steps,
+            noise_schedule=noise_schedule,
+            mean_type=mean_type,
+            rescale_timesteps=rescale_timesteps,
+            timestep_respacing=timestep_respacing,
+        )
+    elif diffusion_type == "poisson":
+        diffusion = create_priorpoisson_diffusion(
+            steps=diffusion_steps,
+            noise_schedule=noise_schedule,
+            ltype=ltype,
+            mean_type=mean_type,
+            rescale_timesteps=rescale_timesteps,
+            timestep_respacing=timestep_respacing,
+        )
+    else:
+        raise NotImplementedError(f"unknown diffusion type: {diffusion_type}")
 
     return model, diffusion
 
@@ -132,10 +155,76 @@ def create_model(
     return model
 
 
+def create_gaussian_diffusion(
+    steps=1000,
+    noise_schedule="linear",
+    mean_type="ystart",
+    rescale_timesteps=False,
+    timestep_respacing="",
+):
+    betas = gd.get_named_beta_schedule(noise_schedule, steps)
+    if not timestep_respacing:
+        timestep_respacing = [steps]
+    if mean_type == "ystart":
+        model_mean = gd.ModelMeanType.START_Y
+    elif mean_type == "epsilon":
+        model_mean = gd.ModelMeanType.EPSILON
+    elif mean_type == "previous":
+        model_mean = gd.ModelMeanType.PREVIOUS_Y
+    else:
+        raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
+
+    return gd.GaussianDiffusion(
+        betas=betas,
+        model_mean_type=model_mean,
+        loss_type=gd.LossType.MSE,
+        rescale_timesteps=rescale_timesteps,
+    )
+
+
 def create_priorbinomial_diffusion(
     steps=1000,
     noise_schedule="linear",
-    ltype="bce",
+    ltype="mix",
+    mean_type="ystart",
+    rescale_timesteps=False,
+    timestep_respacing="",
+):
+    betas = pbd.get_named_beta_schedule(noise_schedule, steps)
+    if ltype == "rescale_kl":
+        loss_type = pbd.LossType.RESCALED_KL
+    elif ltype == "kl":
+        loss_type = pbd.LossType.KL
+    elif ltype == "bce":
+        loss_type = pbd.LossType.BCE
+    elif ltype == "mix":
+        loss_type = pbd.LossType.MIX
+    else:
+        raise NotImplementedError(f"unknown LossType: {ltype}")
+    if not timestep_respacing:
+        timestep_respacing = [steps]
+    if mean_type == "ystart":
+        model_mean = pbd.ModelMeanType.START_Y
+    elif mean_type == "epsilon":
+        model_mean = pbd.ModelMeanType.EPSILON
+    elif mean_type == "previous":
+        model_mean = pbd.ModelMeanType.PREVIOUS_Y
+    else:
+        raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
+
+    return SpacedDiffusion(
+        use_timesteps=space_timesteps(steps, timestep_respacing),
+        betas=betas,
+        model_mean_type=model_mean,
+        loss_type=loss_type,
+        rescale_timesteps=rescale_timesteps,
+    )
+
+
+def create_priorpoisson_diffusion(
+    steps=1000,
+    noise_schedule="linear",
+    ltype="mix",
     mean_type="ystart",
     rescale_timesteps=False,
     timestep_respacing="",

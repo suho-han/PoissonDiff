@@ -13,9 +13,10 @@ import torch.distributed as dist
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
+from scripts.create_table import evaluate_results
 from src.data.image_datasets import load_data
 from src.loggings import logger
-from src.scripts.create_table import evaluate_results
+from src.scripts.patch_sampling import patch_sample
 from src.scripts.script_util import add_dict_to_argparser, args_to_dict, create_model_and_diffusion, model_and_diffusion_defaults
 from src.training import dist_util
 
@@ -24,7 +25,7 @@ NUM_CLASSES = 1
 
 def main():
     args = create_argparser().parse_args()
-    output_dir = f"workdir/{args.dataset}-{args.prior_model}"
+    output_dir = f"workdir/{args.diffusion_type}-{args.dataset}-{args.prior_model}"
     epoch = args.model_path.split('_')[-1].split('.')[0]
     result_dir = f"{output_dir}/results-{epoch}"
     os.makedirs(result_dir, exist_ok=True)
@@ -66,13 +67,28 @@ def main():
         sample_fn = (
             diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
         )
-        sample, intermediates = sample_fn(
-            model,
-            (args.batch_size, 1, args.image_size, args.image_size),
-            # clip_denoised=args.clip_denoised,
-            model_kwargs=model_kwargs,
-            return_intermediates=True,
-        )
+
+        # Use patch sampling if image is larger than model input size
+        if image.shape[2] > args.image_size or image.shape[3] > args.image_size:
+            sample, intermediates = patch_sample(
+                sample_fn=sample_fn,
+                model=model,
+                image=image.to(dist_util.dev()),
+                prior=input.to(dist_util.dev()),
+                input_size=args.image_size,
+                target_size=image.shape[2],
+                overlap=args.image_size//2,
+                model_kwargs=model_kwargs,
+                batch_size=args.batch_size,
+            )
+        else:
+            sample, intermediates = sample_fn(
+                model,
+                (args.batch_size, 1, args.image_size, args.image_size),
+                # clip_denoised=args.clip_denoised,
+                model_kwargs=model_kwargs,
+                return_intermediates=True,
+            )
         # sample = ((sample + 1) * 127.5).clamp(0, 255).to(torch.uint8)
         sample = sample.permute(0, 2, 3, 1)
         sample = sample.contiguous()
@@ -104,6 +120,7 @@ def create_argparser():
         model_path="",
         gpu="2",
         prior_model='FRUnet',
+        stride=64,  # Stride for patch-based sampling of large images
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

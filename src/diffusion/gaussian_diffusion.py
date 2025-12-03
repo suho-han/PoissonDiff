@@ -3,9 +3,8 @@ import math
 
 import numpy as np
 import torch
-from torch.distributions.binomial import Binomial
 
-from src.loss.losses import binomial_kl, binomial_log_likelihood, focal_loss
+from src.loss.losses import discretized_gaussian_log_likelihood, focal_loss, normal_kl
 from src.model.basic_module import mean_flat
 
 
@@ -77,16 +76,10 @@ class ModelMeanType(enum.Enum):
 
 
 class LossType(enum.Enum):
-    KL = enum.auto()  # use the variational lower-bound
-    RESCALED_KL = enum.auto()  # like KL, but rescale to estimate the full VLB
-    BCE = enum.auto()  # use raw BCE loss
-    MIX = enum.auto()  # combine BCE loss and kl loss
-
-    def is_vb(self):
-        return self == LossType.KL or self == LossType.RESCALED_KL
+    MSE = enum.auto()  # use raw MSE loss
 
 
-class PriorBinomialDiffusion:
+class GaussianDiffusion:
     """
     Utilities for training and sampling diffusion models.
 
@@ -120,46 +113,40 @@ class PriorBinomialDiffusion:
 
         self.alphas = 1.0 - betas
         self.alphas_cumprod = np.cumprod(self.alphas, axis=0)
+        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1])
+        self.sqrt_alphas_cumprod = np.sqrt(self.alphas_cumprod)
+        self.sqrt_one_minus_alphas_cumprod = np.sqrt(1.0 - self.alphas_cumprod)
+        self.sqrt_recip_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod)
+        self.sqrt_recipm1_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod - 1)
 
-    def q_mean(self, y_start, p, t):
-        """
-        Get the distribution q(y_t | y_start, f(x)).
-
-        :param y_start: the [N x C x ...] tensor of noiseless inputs.
-        :param p: the output of a segmentor (prior)
-        :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
-        :return: Binomial distribution parameters, of y_start's shape.
-        """
-        mean = _extract_into_tensor(self.alphas_cumprod, t, y_start.shape) * y_start \
-            + (1 - _extract_into_tensor(self.alphas_cumprod, t, y_start.shape)) * p
-
-        return mean
-
-    def q_sample(self, y_start, p, t):
+    def q_sample(self, y_start, t):
         """
         Diffuse the data for a given number of diffusion steps.
-        In other words, sample from q(y_t | y_start, f(x)).
+        In other words, sample from q(y_t | y_start).
+
+        y_t = sqrt(alpha_cumprod_t) * y_start + sqrt(1 - alpha_cumprod_t) * epsilon
+        where epsilon ~ N(0, I)
 
         :param y_start: the initial data batch.
         :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
         :return: A noisy version of y_start.
         """
+        epsilon = torch.randn_like(y_start)
+        y_t = _extract_into_tensor(self.alphas_cumprod, t, y_start.shape) * y_start + \
+            (1 - _extract_into_tensor(self.alphas_cumprod, t, y_start.shape)) * epsilon
+        return y_t
 
-        mean = self.q_mean(y_start, p, t)
-        return Binomial(1, mean).sample()
-
-    def q_posterior_mean(self, y_start, y_t, p, t):
+    def q_posterior_mean(self, y_start, y_t, t):
         """
-        Get the distribution q(y_{t-1} | y_t, y_start, f(x))
+        Get the distribution q(y_{t-1} | y_t, y_start)
         """
         assert y_start.shape == y_t.shape
 
-        theta_1 = (_extract_into_tensor(self.alphas, t, y_start.shape) * (1-y_t) + (1 - _extract_into_tensor(self.alphas, t, y_start.shape)) * (torch.abs(1-y_t-p))) * \
-            (_extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape) * (1-y_start) + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape)) * (1-p))
-        theta_2 = (_extract_into_tensor(self.alphas, t, y_start.shape) * y_t + (1 - _extract_into_tensor(self.alphas, t, y_start.shape)) * (torch.abs(1-y_t-p))) * \
-            (_extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape) * y_start + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape)) * p)
-
-        posterior_mean = theta_2 / (theta_1 + theta_2)
+        mu_hat = _extract_into_tensor(self.alphas_cumprod, t-1, y_t.shape) * _extract_into_tensor(self.betas, t, y_t.shape) / \
+            (1.0 - _extract_into_tensor(self.alphas_cumprod, t, y_t.shape))
+        mu = torch.sqrt(_extract_into_tensor(self.alphas_cumprod, t, y_t.shape)) * (1-_extract_into_tensor(self.alphas_cumprod, t-1, y_t.shape)) / \
+            (1.0 - _extract_into_tensor(self.alphas_cumprod, t, y_t.shape))
+        posterior_mean = mu_hat * y_start + mu * y_t
 
         return posterior_mean
 
@@ -225,6 +212,12 @@ class PriorBinomialDiffusion:
             torch.abs(y_t - eps).to(device=t.device).float()
         )
 
+    def _predict_eps_from_xstart(self, x_t, t, pred_xstart):
+        return (
+            _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
+            - pred_xstart
+        ) / _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
+
     def _predict_ystart_from_yprev(self, y_t, t, yprev):
         raise NotImplementedError
 
@@ -232,6 +225,17 @@ class PriorBinomialDiffusion:
         if self.rescale_timesteps:
             return t.float() * (1000.0 / self.num_timesteps)
         return t
+
+    def p_variance(self, y, t):
+        """
+        Get the variance for p(y_{t-1} | y_t).
+
+        :param t: the timesteps.
+        :return: a tensor of the variances at the given timesteps.
+        """
+        betas_t = (1-_extract_into_tensor(self.alphas_cumprod, t-1, y.shape)) /\
+            (1-_extract_into_tensor(self.alphas_cumprod, t, y.shape)) * _extract_into_tensor(self.betas, t, y.shape)
+        return betas_t
 
     @torch.no_grad()
     def p_sample(
@@ -258,18 +262,19 @@ class PriorBinomialDiffusion:
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
-        sample = Binomial(1, torch.clip(out["mean"], min=0, max=1)).sample()
+        variance = self.p_variance(y, t)
+        noise = torch.randn_like(y) if t > 0 else 0.0
+        sample = out["mean"] + (0.5 * variance).exp() * noise
+
         if t[0] != 0:
             return {"sample": sample, "pred_ystart": out["pred_ystart"]}
         else:
             return {"sample": out["mean"], "pred_ystart": out["pred_ystart"]}
 
-    @torch.no_grad()
     def p_sample_loop(
         self,
         model,
         shape,
-        noise=None,
         denoised_fn=None,
         model_kwargs=None,
         device=None,
@@ -281,8 +286,6 @@ class PriorBinomialDiffusion:
 
         :param model: the model module.
         :param shape: the shape of the samples, (N, C, H, W).
-        :param noise: if specified, the noise from the encoder to sample.
-                      Should be of the same shape as `shape`.
         :param denoised_fn: if not None, a function which applies to the
             y_start prediction before it is used to sample.
         :param model_kwargs: if not None, a dict of extra keyword arguments to
@@ -300,7 +303,6 @@ class PriorBinomialDiffusion:
         for sample in self.p_sample_loop_progressive(
             model,
             shape,
-            noise=noise,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
             device=device,
@@ -313,12 +315,10 @@ class PriorBinomialDiffusion:
             return final["sample"], intermediates
         return final["sample"]
 
-    @torch.no_grad()
     def p_sample_loop_progressive(
         self,
         model,
         shape,
-        noise=None,
         denoised_fn=None,
         model_kwargs=None,
         device=None,
@@ -335,10 +335,8 @@ class PriorBinomialDiffusion:
         if device is None:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
-        if noise is not None:
-            img = noise
-        else:
-            img = Binomial(1, model_kwargs["prior"]).sample().to(device)
+
+        img = torch.randn(shape, device=device)
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
@@ -358,12 +356,12 @@ class PriorBinomialDiffusion:
                 yield out
                 img = out["sample"]
 
-    @torch.no_grad()
     def ddim_sample(
         self,
         model,
         y,
         t,
+        eta=0.0,
         denoised_fn=None,
         model_kwargs=None,
     ):
@@ -378,17 +376,26 @@ class PriorBinomialDiffusion:
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
-        if t[0] != 0:
-            alpha_bar_t_1 = _extract_into_tensor(self.alphas_cumprod, t-1, y.shape)
-            alpha_bar_t = _extract_into_tensor(self.alphas_cumprod, t, y.shape)
-            sigma = (1 - alpha_bar_t_1) / (1 - alpha_bar_t)
-            mean = sigma * y + (alpha_bar_t_1 - sigma * alpha_bar_t) * out["pred_ystart"]
-            sample = Binomial(1, torch.clip(mean, min=0, max=1)).sample()
-            return {"sample": sample, "pred_ystart": out["pred_ystart"]}
-        else:
-            return {"sample": out["mean"], "pred_ystart": out["pred_ystart"]}
+        eps = self._predict_eps_from_xstart(y, t, out["pred_ystart"])
+        alpha_bar = _extract_into_tensor(self.alphas_cumprod, t, y.shape)
+        alpha_bar_prev = _extract_into_tensor(self.alphas_cumprod_prev, t, y.shape)
+        sigma = (
+            eta
+            * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
+            * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
+        )
+        # Equation 12.
+        noise = torch.randn_like(y)
+        mean_pred = (
+            out["pred_ystart"] * torch.sqrt(alpha_bar_prev)
+            + torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
+        )
+        nonzero_mask = (
+            (t != 0).float().view(-1, *([1] * (len(y.shape) - 1)))
+        )  # no noise when t == 0
+        sample = mean_pred + nonzero_mask * sigma * noise
+        return {"sample": sample, "pred_ystart": out["pred_ystart"]}
 
-    @torch.no_grad()
     def ddim_sample_loop(
         self,
         model,
@@ -412,17 +419,17 @@ class PriorBinomialDiffusion:
             noise=noise,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
+            eta=0.0,
             device=device,
             progress=progress,
         )):
             final = sample
-            if intermediates is not None and (i % 50 == 0 or i == self.num_timesteps - 1 or i == 0):
+            if intermediates is not None and i % 50 == 0:
                 intermediates.append(sample["sample"])
         if return_intermediates:
             return final["sample"], intermediates
         return final["sample"]
 
-    @torch.no_grad()
     def ddim_sample_loop_progressive(
         self,
         model,
@@ -441,10 +448,7 @@ class PriorBinomialDiffusion:
         if device is None:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
-        if noise is not None:
-            img = noise
-        else:
-            img = Binomial(1, model_kwargs["prior"]).sample().to(device)
+        img = torch.randn(shape, device=device)
 
         # Yield initial sample
         yield {"sample": img, "pred_ystart": None}
@@ -483,11 +487,11 @@ class PriorBinomialDiffusion:
         """
         true_mean = self.q_posterior_mean(y_start=y_start, y_t=y_t, p=model_kwargs["prior"], t=t)
         out = self.p_mean(model, y_t, t, model_kwargs=model_kwargs)
-        kl = binomial_kl(true_mean, out["mean"])
+        kl = normal_kl(true_mean, out["mean"])
 
         kl = mean_flat(kl) / np.log(2.0)
 
-        decoder_nll = -binomial_log_likelihood(y_start, means=out["mean"])
+        decoder_nll = -discretized_gaussian_log_likelihood(y_start, means=out["mean"])
         assert decoder_nll.shape == y_start.shape
         decoder_nll = mean_flat(decoder_nll) / np.log(2.0)
 
@@ -508,42 +512,20 @@ class PriorBinomialDiffusion:
         """
         if model_kwargs is None:
             model_kwargs = {}
-        y_t = self.q_sample(y_start, model_kwargs["prior"], t)
+        y_t = self.q_sample(y_start, t)
 
         terms = {}
 
-        if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL or self.loss_type == LossType.MIX:
-            terms["loss"] = self._vb_terms_bpd(
-                model=model,
-                y_start=y_start,
-                y_t=y_t,
-                t=t,
-                model_kwargs=model_kwargs,
-            )["output"]  # KL
-            if self.loss_type == LossType.RESCALED_KL:
-                terms["loss"] *= self.num_timesteps
-            if self.loss_type == LossType.MIX:
-                target = {
-                    ModelMeanType.PREVIOUS_Y: self.q_posterior_mean(
-                        y_start=y_start, y_t=y_t, p=model_kwargs["prior"], t=t
-                    ),
-                    ModelMeanType.START_Y: y_start,
-                    ModelMeanType.EPSILON: self._predict_ystart_from_eps(y_t=y_t, t=t, eps=y_start),
-                }[self.model_mean_type]
-                model_output = model(y_t, self._scale_timesteps(t), **model_kwargs)
-                terms["focal"] = lambda_focal * focal_loss(model_output, target) / np.log(2.0)
-                terms["vb"] = terms["loss"]
-                terms["loss"] = terms["vb"] + terms["focal"]
-        elif self.loss_type == LossType.BCE:
+        if self.loss_type == LossType.MSE:
             target = {
                 ModelMeanType.PREVIOUS_Y: self.q_posterior_mean(
-                    y_start=y_start, y_t=y_t, p=model_kwargs["prior"], t=t
+                    y_start=y_start, y_t=y_t, t=t
                 ),
                 ModelMeanType.START_Y: y_start,
-                ModelMeanType.EPSILON: self._predict_ystart_from_eps(y_t=y_t, t=t, eps=y_start),
+                ModelMeanType.EPSILON: y_t - _extract_into_tensor(self.sqrt_alphas_cumprod, t, y_t.shape) * y_start,
             }[self.model_mean_type]
             model_output = model(y_t, self._scale_timesteps(t), **model_kwargs)
-            terms["loss"] = mean_flat(-binomial_log_likelihood(target, means=model_output)) / np.log(2.0)
+            terms["loss"] = mean_flat((target - model_output) ** 2)
         else:
             raise NotImplementedError(self.loss_type)
 

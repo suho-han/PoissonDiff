@@ -3,14 +3,14 @@ Logger copied from OpenAI baselines to avoid extra RL-based dependencies:
 https://github.com/openai/baselines/blob/ea25b9e8b234e6ee1bca43083f8f3cf974143998/baselines/logger.py
 """
 
-import os
-import sys
-import shutil
-import os.path as osp
-import json
-import time
 import datetime
+import json
+import os
+import os.path as osp
+import shutil
+import sys
 import tempfile
+import time
 import warnings
 from collections import defaultdict
 from contextlib import contextmanager
@@ -156,35 +156,24 @@ class TensorBoardOutputFormat(KVWriter):
         os.makedirs(dir, exist_ok=True)
         self.dir = dir
         self.step = 1
-        prefix = "events"
-        path = osp.join(osp.abspath(dir), prefix)
-        import tensorflow as tf
-        from tensorflow.python import pywrap_tensorflow
-        from tensorflow.core.util import event_pb2
-        from tensorflow.python.util import compat
-
-        self.tf = tf
-        self.event_pb2 = event_pb2
-        self.pywrap_tensorflow = pywrap_tensorflow
-        self.writer = pywrap_tensorflow.EventsWriter(compat.as_bytes(path))
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            self.writer = SummaryWriter(log_dir=dir)
+        except ImportError:
+            warnings.warn("tensorboard not available, skipping TensorBoard logging")
+            self.writer = None
 
     def writekvs(self, kvs):
-        def summary_val(k, v):
-            kwargs = {"tag": k, "simple_value": float(v)}
-            return self.tf.Summary.Value(**kwargs)
-
-        summary = self.tf.Summary(value=[summary_val(k, v) for k, v in kvs.items()])
-        event = self.event_pb2.Event(wall_time=time.time(), summary=summary)
-        event.step = (
-            self.step
-        )  # is there any reason why you'd want to specify the step?
-        self.writer.WriteEvent(event)
-        self.writer.Flush()
+        if self.writer is None:
+            return
+        for k, v in kvs.items():
+            self.writer.add_scalar(k, float(v), self.step)
+        self.writer.flush()
         self.step += 1
 
     def close(self):
         if self.writer:
-            self.writer.Close()
+            self.writer.close()
             self.writer = None
 
 
@@ -492,4 +481,3 @@ def scoped_configure(dir=None, format_strs=None, comm=None):
     finally:
         Logger.CURRENT.close()
         Logger.CURRENT = prevlogger
-

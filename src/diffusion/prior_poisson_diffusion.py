@@ -3,9 +3,9 @@ import math
 
 import numpy as np
 import torch
-from torch.distributions.binomial import Binomial
+from torch.distributions.poisson import Poisson
 
-from src.loss.losses import binomial_kl, binomial_log_likelihood, focal_loss
+from src.loss.losses import focal_loss, poisson_kl, poisson_log_likelihood
 from src.model.basic_module import mean_flat
 
 
@@ -86,7 +86,7 @@ class LossType(enum.Enum):
         return self == LossType.KL or self == LossType.RESCALED_KL
 
 
-class PriorBinomialDiffusion:
+class PriorPoissonDiffusion:
     """
     Utilities for training and sampling diffusion models.
 
@@ -124,11 +124,12 @@ class PriorBinomialDiffusion:
     def q_mean(self, y_start, p, t):
         """
         Get the distribution q(y_t | y_start, f(x)).
+        mean = alpha_t * y_0 + (1 - alpha_t) * f(x)
 
         :param y_start: the [N x C x ...] tensor of noiseless inputs.
         :param p: the output of a segmentor (prior)
         :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
-        :return: Binomial distribution parameters, of y_start's shape.
+        :return: Poisson distribution parameters, of y_start's shape.
         """
         mean = _extract_into_tensor(self.alphas_cumprod, t, y_start.shape) * y_start \
             + (1 - _extract_into_tensor(self.alphas_cumprod, t, y_start.shape)) * p
@@ -146,7 +147,7 @@ class PriorBinomialDiffusion:
         """
 
         mean = self.q_mean(y_start, p, t)
-        return Binomial(1, mean).sample()
+        return Poisson(mean).sample()
 
     def q_posterior_mean(self, y_start, y_t, p, t):
         """
@@ -258,7 +259,7 @@ class PriorBinomialDiffusion:
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
-        sample = Binomial(1, torch.clip(out["mean"], min=0, max=1)).sample()
+        sample = Poisson(torch.clip(out["mean"], min=0, max=1)).sample()
         if t[0] != 0:
             return {"sample": sample, "pred_ystart": out["pred_ystart"]}
         else:
@@ -338,7 +339,7 @@ class PriorBinomialDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = Binomial(1, model_kwargs["prior"]).sample().to(device)
+            img = Poisson(model_kwargs["prior"]).sample().to(device)
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
@@ -383,7 +384,7 @@ class PriorBinomialDiffusion:
             alpha_bar_t = _extract_into_tensor(self.alphas_cumprod, t, y.shape)
             sigma = (1 - alpha_bar_t_1) / (1 - alpha_bar_t)
             mean = sigma * y + (alpha_bar_t_1 - sigma * alpha_bar_t) * out["pred_ystart"]
-            sample = Binomial(1, torch.clip(mean, min=0, max=1)).sample()
+            sample = Poisson(torch.clip(mean, min=0, max=1)).sample()
             return {"sample": sample, "pred_ystart": out["pred_ystart"]}
         else:
             return {"sample": out["mean"], "pred_ystart": out["pred_ystart"]}
@@ -416,7 +417,7 @@ class PriorBinomialDiffusion:
             progress=progress,
         )):
             final = sample
-            if intermediates is not None and (i % 50 == 0 or i == self.num_timesteps - 1 or i == 0):
+            if intermediates is not None and i % 50 == 0:
                 intermediates.append(sample["sample"])
         if return_intermediates:
             return final["sample"], intermediates
@@ -444,7 +445,7 @@ class PriorBinomialDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = Binomial(1, model_kwargs["prior"]).sample().to(device)
+            img = Poisson(model_kwargs["prior"]).sample().to(device)
 
         # Yield initial sample
         yield {"sample": img, "pred_ystart": None}
@@ -483,11 +484,11 @@ class PriorBinomialDiffusion:
         """
         true_mean = self.q_posterior_mean(y_start=y_start, y_t=y_t, p=model_kwargs["prior"], t=t)
         out = self.p_mean(model, y_t, t, model_kwargs=model_kwargs)
-        kl = binomial_kl(true_mean, out["mean"])
+        kl = poisson_kl(true_mean, out["mean"])
 
         kl = mean_flat(kl) / np.log(2.0)
 
-        decoder_nll = -binomial_log_likelihood(y_start, means=out["mean"])
+        decoder_nll = -poisson_log_likelihood(y_start, lambdas=out["mean"])
         assert decoder_nll.shape == y_start.shape
         decoder_nll = mean_flat(decoder_nll) / np.log(2.0)
 
@@ -543,7 +544,7 @@ class PriorBinomialDiffusion:
                 ModelMeanType.EPSILON: self._predict_ystart_from_eps(y_t=y_t, t=t, eps=y_start),
             }[self.model_mean_type]
             model_output = model(y_t, self._scale_timesteps(t), **model_kwargs)
-            terms["loss"] = mean_flat(-binomial_log_likelihood(target, means=model_output)) / np.log(2.0)
+            terms["loss"] = mean_flat(-poisson_log_likelihood(target, lambdas=model_output)) / np.log(2.0)
         else:
             raise NotImplementedError(self.loss_type)
 

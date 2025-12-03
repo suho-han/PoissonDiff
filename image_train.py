@@ -18,8 +18,8 @@ def main():
     args = create_argparser().parse_args()
 
     dist_util.setup_dist(args.gpu)
-    output_dir = f"workdir/{args.dataset}-{args.prior_model}"
-    logger.configure(dir=output_dir)
+    output_dir = f"workdir/{args.diffusion_type}-{args.dataset}-{args.prior_model}"
+    logger.configure(dir=output_dir, format_strs=["stdout", "log", "csv", "tensorboard"])
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
