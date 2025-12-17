@@ -13,11 +13,12 @@ import torch.distributed as dist
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from scripts.create_table import evaluate_results
 from src.data.image_datasets import load_data
 from src.loggings import logger
+from src.loggings.run_history import append_run_history
 from src.scripts.patch_sampling import patch_sample
 from src.scripts.script_util import add_dict_to_argparser, args_to_dict, create_model_and_diffusion, model_and_diffusion_defaults
+from src.scripts.tensor_io import save_tensor_as_npy
 from src.training import dist_util
 
 NUM_CLASSES = 1
@@ -25,12 +26,22 @@ NUM_CLASSES = 1
 
 def main():
     args = create_argparser().parse_args()
-    output_dir = f"workdir/{args.diffusion_type}-{args.dataset}-{args.prior_model}"
+    base_output = "test-run" if args.test_run else "workdir"
+    output_dir = f"{base_output}/{args.diffusion_type}/{args.dataset}-{args.prior_model}"
     epoch = args.model_path.split('_')[-1].split('.')[0]
     result_dir = f"{output_dir}/results-{epoch}"
     os.makedirs(result_dir, exist_ok=True)
     dist_util.setup_dist(args.gpu)
     logger.configure(dir=output_dir)
+
+    append_run_history(
+        args,
+        mode="sample",
+        command="image_sample",
+        epoch=epoch,
+        output_dir=output_dir,
+        result_dir=result_dir,
+    )
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
@@ -57,54 +68,60 @@ def main():
     loader = tqdm(dataloader, desc="Sampling batches", unit="batch")
     for i, (input, target, image) in enumerate(loader):
         loader.set_description(f"sampling batch {i+1}/{num_batches}")
-        model_kwargs = {"img": image.to(dist_util.dev()),
-                        "prior": input.to(dist_util.dev())}
+        batch_size = image.shape[0]
+        model_kwargs = {
+            "img": image.to(dist_util.dev()),
+            "prior": input.to(dist_util.dev()),
+        }
         if args.class_cond:
             classes = torch.randint(
-                low=0, high=NUM_CLASSES, size=(args.batch_size,), device=dist_util.dev()
+                low=0, high=NUM_CLASSES, size=(batch_size,), device=dist_util.dev()
             )
             model_kwargs["y"] = classes
         sample_fn = (
             diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
         )
 
-        # Use patch sampling if image is larger than model input size
-        if image.shape[2] > args.image_size or image.shape[3] > args.image_size:
-            sample, intermediates = patch_sample(
-                sample_fn=sample_fn,
-                model=model,
-                image=image.to(dist_util.dev()),
-                prior=input.to(dist_util.dev()),
-                input_size=args.image_size,
-                target_size=image.shape[2],
-                overlap=args.image_size//2,
-                model_kwargs=model_kwargs,
-                batch_size=args.batch_size,
-            )
-        else:
-            sample, intermediates = sample_fn(
-                model,
-                (args.batch_size, 1, args.image_size, args.image_size),
-                # clip_denoised=args.clip_denoised,
-                model_kwargs=model_kwargs,
-                return_intermediates=True,
-            )
+        with torch.inference_mode():
+            if image.shape[2] > args.image_size or image.shape[3] > args.image_size:
+                overlap = max(0, min(args.image_size - 1, args.image_size - args.stride))
+                sample, intermediates = patch_sample(
+                    sample_fn=sample_fn,
+                    model=model,
+                    image=image.to(dist_util.dev()),
+                    prior=input.to(dist_util.dev()),
+                    input_size=args.image_size,
+                    overlap=overlap,
+                    model_kwargs=model_kwargs,
+                )
+            else:
+                sample, intermediates = sample_fn(
+                    model,
+                    (batch_size, 1, args.image_size, args.image_size),
+                    # clip_denoised=args.clip_denoised,
+                    model_kwargs=model_kwargs,
+                    return_intermediates=True,
+                )
         # sample = ((sample + 1) * 127.5).clamp(0, 255).to(torch.uint8)
         sample = sample.permute(0, 2, 3, 1)
         sample = sample.contiguous()
         final_output = (sample > 0.5).float()
-        final_output = final_output.to(torch.uint8)*255
+        final_output = final_output.to(torch.uint8)
         os.makedirs(f"{result_dir}/intermediates", exist_ok=True)
         for j in range(input.shape[0]):
-            plt.imsave(f"{result_dir}/{i}_image_{j}.png", image[j, 0, :, :].cpu().numpy(), cmap='gray')
-            plt.imsave(f"{result_dir}/{i}_target_{j}.png", target[j, 0, :, :].cpu().numpy(), cmap='gray')
-            plt.imsave(f"{result_dir}/{i}_output_{j}.png", sample[j, :, :, 0].cpu().numpy(), cmap='gray')
-            plt.imsave(f"{result_dir}/{i}_final_output_{j}.png", final_output[j, :, :, 0].cpu().numpy(), cmap='gray')
-            plt.imsave(f"{result_dir}/{i}_input_{j}.png", input[j, 0, :, :].cpu().numpy(), cmap='gray')
+            save_tensor_as_npy(f"{result_dir}/{i}_image_{j}.npy", image[j])
+            save_tensor_as_npy(f"{result_dir}/{i}_target_{j}.npy", target[j])
+            save_tensor_as_npy(f"{result_dir}/{i}_output_{j}.npy", sample[j])
+            save_tensor_as_npy(f"{result_dir}/{i}_final_output_{j}.npy", final_output[j])
+            save_tensor_as_npy(f"{result_dir}/{i}_input_{j}.npy", input[j])
 
             for step, out in enumerate(intermediates):
-                interm_sample = out[j].permute(1, 2, 0).contiguous()
-                plt.imsave(f"{result_dir}/intermediates/{i}_image_{j}_step_{step}.png", interm_sample[:, :, 0].cpu().numpy(), cmap='gray')
+                save_tensor_as_npy(
+                    f"{result_dir}/intermediates/{i}_image_{j}_step_{step}",
+                    out[j],
+                )
+        if args.test_run:
+            break
     dist.barrier()
     logger.log("sampling complete")
 
@@ -121,6 +138,7 @@ def create_argparser():
         gpu="2",
         prior_model='FRUnet',
         stride=64,  # Stride for patch-based sampling of large images
+        test_run=False,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

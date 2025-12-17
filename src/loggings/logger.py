@@ -152,13 +152,13 @@ class TensorBoardOutputFormat(KVWriter):
     Dumps key/value pairs into TensorBoard's numeric format.
     """
 
-    def __init__(self, dir):
+    def __init__(self, dir, experiment_name=None):
         os.makedirs(dir, exist_ok=True)
         self.dir = dir
         self.step = 1
         try:
             from torch.utils.tensorboard import SummaryWriter
-            self.writer = SummaryWriter(log_dir=dir)
+            self.writer = SummaryWriter(log_dir=dir, comment=experiment_name if experiment_name else "")
         except ImportError:
             warnings.warn("tensorboard not available, skipping TensorBoard logging")
             self.writer = None
@@ -171,13 +171,40 @@ class TensorBoardOutputFormat(KVWriter):
         self.writer.flush()
         self.step += 1
 
+    def add_image(self, tag, images, step=None, max_images=4):
+        if self.writer is None or images is None:
+            return
+        try:
+            import torch
+        except ImportError:
+            warnings.warn("torch is required for image logging but was not found")
+            return
+        if not isinstance(images, torch.Tensor):
+            images = torch.as_tensor(images)
+        if images.ndim == 3:
+            images = images.unsqueeze(0)
+        if images.ndim != 4:
+            warnings.warn("log_image expects a 3D or 4D tensor (CHW or NCHW)")
+            return
+        images = images.detach().cpu().float()
+        images = images[:max_images]
+        if images.shape[1] not in (1, 3):
+            images = images.mean(dim=1, keepdim=True)
+        min_vals = images.amin(dim=(1, 2, 3), keepdim=True)
+        max_vals = images.amax(dim=(1, 2, 3), keepdim=True)
+        scales = (max_vals - min_vals).clamp(min=1e-8)
+        norm_images = (images - min_vals) / scales
+        step_value = self.step if step is None else step
+        self.writer.add_images(tag, norm_images, step_value)
+        self.writer.flush()
+
     def close(self):
         if self.writer:
             self.writer.close()
             self.writer = None
 
 
-def make_output_format(format, ev_dir, log_suffix=""):
+def make_output_format(format, ev_dir, log_suffix="", experiment_name=None):
     os.makedirs(ev_dir, exist_ok=True)
     if format == "stdout":
         return HumanOutputFormat(sys.stdout)
@@ -188,7 +215,7 @@ def make_output_format(format, ev_dir, log_suffix=""):
     elif format == "csv":
         return CSVOutputFormat(osp.join(ev_dir, "progress%s.csv" % log_suffix))
     elif format == "tensorboard":
-        return TensorBoardOutputFormat(osp.join(ev_dir, "tb%s" % log_suffix))
+        return TensorBoardOutputFormat(osp.join(ev_dir, "tb%s" % log_suffix), experiment_name)
     else:
         raise ValueError("Unknown format specified: %s" % (format,))
 
@@ -220,6 +247,11 @@ def logkvs(d):
     """
     for (k, v) in d.items():
         logkv(k, v)
+
+
+def log_image(key, images, step=None):
+    """Log image tensors (expects NCHW or CHW)."""
+    get_current().log_image(key, images, step)
 
 
 def dumpkvs():
@@ -291,6 +323,33 @@ def profile_kv(scopename):
 
 def profile(n):
     """
+
+        def add_image(self, tag, images, step=None, max_images=4):
+            if self.writer is None or images is None:
+                return
+            try:
+                import torch
+            except ImportError:
+                warnings.warn("torch is required for image logging but was not found")
+                return
+            if not isinstance(images, torch.Tensor):
+                images = torch.as_tensor(images)
+            if images.ndim == 3:
+                images = images.unsqueeze(0)
+            if images.ndim != 4:
+                warnings.warn("log_image expects a 3D or 4D tensor (CHW or NCHW)")
+                return
+            images = images.detach().cpu().float()
+            images = images[:max_images]
+            if images.shape[1] not in (1, 3):
+                images = images.mean(dim=1, keepdim=True)
+            min_vals = images.amin(dim=(1, 2, 3), keepdim=True)
+            max_vals = images.amax(dim=(1, 2, 3), keepdim=True)
+            scales = (max_vals - min_vals).clamp(min=1e-8)
+            norm_images = (images - min_vals) / scales
+            step_value = self.step if step is None else step
+            self.writer.add_images(tag, norm_images, step_value)
+            self.writer.flush()
     Usage:
     @profile("my_func")
     def my_func(): code
@@ -366,6 +425,13 @@ class Logger(object):
         if self.level <= level:
             self._do_log(args)
 
+    def log_image(self, key, images, step=None):
+        for fmt in self.output_formats:
+            add_image = getattr(fmt, "add_image", None)
+            if add_image is None:
+                continue
+            add_image(key, images, step)
+
     # Configuration
     # ----------------------------------------
     def set_level(self, level):
@@ -428,7 +494,7 @@ def mpi_weighted_mean(comm, local_name2valcount):
         return {}
 
 
-def configure(dir=None, format_strs=None, comm=None, log_suffix=""):
+def configure(dir=None, format_strs=None, comm=None, log_suffix="", experiment_name=None):
     """
     If comm is provided, average all numerical stats across that comm
     """
@@ -453,7 +519,7 @@ def configure(dir=None, format_strs=None, comm=None, log_suffix=""):
         else:
             format_strs = os.getenv("OPENAI_LOG_FORMAT_MPI", "log").split(",")
     format_strs = filter(None, format_strs)
-    output_formats = [make_output_format(f, dir, log_suffix) for f in format_strs]
+    output_formats = [make_output_format(f, dir, log_suffix, experiment_name) for f in format_strs]
 
     Logger.CURRENT = Logger(dir=dir, output_formats=output_formats, comm=comm)
     if output_formats:

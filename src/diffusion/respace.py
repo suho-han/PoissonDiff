@@ -1,7 +1,9 @@
 import numpy as np
 import torch as th
 
+from src.diffusion.gaussian_diffusion import GaussianDiffusion
 from src.diffusion.prior_binomial_diffusion import PriorBinomialDiffusion
+from src.diffusion.prior_poisson_diffusion import PriorPoissonDiffusion
 
 
 def space_timesteps(num_timesteps, section_counts):
@@ -64,30 +66,35 @@ def space_timesteps(num_timesteps, section_counts):
     return set(all_steps)
 
 
-class SpacedDiffusion(PriorBinomialDiffusion):
-    """
-    A diffusion process which can skip steps in a base diffusion process.
-
-    :param use_timesteps: a collection (sequence or set) of timesteps from the
-                          original diffusion process to retain.
-    :param kwargs: the kwargs to create the base diffusion process.
-    """
+class _SpacedDiffusionMixin:
+    """Shared logic for spaced diffusion variants."""
 
     def __init__(self, use_timesteps, **kwargs):
-        self.use_timesteps = set(use_timesteps)
-        self.timestep_map = []
-        self.original_num_steps = len(kwargs["betas"])
+        if "betas" not in kwargs:
+            raise ValueError("Spaced diffusion requires beta schedules.")
 
-        base_diffusion = PriorBinomialDiffusion(**kwargs)  # pylint: disable=missing-kwoa
+        betas = np.array(kwargs["betas"], dtype=np.float64)
+        if betas.ndim != 1:
+            raise ValueError("Betas must be a 1-D sequence.")
+
+        self.use_timesteps = set(use_timesteps)
+        if not self.use_timesteps:
+            raise ValueError("use_timesteps cannot be empty.")
+        self.timestep_map = []
+        self.original_num_steps = len(betas)
+
         last_alpha_cumprod = 1.0
         new_betas = []
-        for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod):
+        alphas_cumprod = np.cumprod(1.0 - betas, axis=0)
+        for i, alpha_cumprod in enumerate(alphas_cumprod):
             if i in self.use_timesteps:
                 new_betas.append(1 - alpha_cumprod / last_alpha_cumprod)
                 last_alpha_cumprod = alpha_cumprod
                 self.timestep_map.append(i)
-        kwargs["betas"] = np.array(new_betas)
-        super().__init__(**kwargs)
+
+        spaced_kwargs = dict(kwargs)
+        spaced_kwargs["betas"] = np.array(new_betas, dtype=np.float64)
+        super().__init__(**spaced_kwargs)
 
     def p_mean(
         self, model, *args, **kwargs
@@ -109,6 +116,18 @@ class SpacedDiffusion(PriorBinomialDiffusion):
     def _scale_timesteps(self, t):
         # Scaling is done by the wrapped model.
         return t
+
+
+class SpacedDiffusion(_SpacedDiffusionMixin, PriorBinomialDiffusion):
+    """Spaced diffusion for binomial-style processes."""
+
+
+class GaussianSpacedDiffusion(_SpacedDiffusionMixin, GaussianDiffusion):
+    """Spaced diffusion for gaussian processes."""
+
+
+class PoissonSpacedDiffusion(_SpacedDiffusionMixin, PriorPoissonDiffusion):
+    """Spaced diffusion for poisson-style processes."""
 
 
 class _WrappedModel:

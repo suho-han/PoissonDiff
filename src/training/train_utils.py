@@ -76,6 +76,9 @@ class TrainLoop:
         self.sync_cuda = th.cuda.is_available()
 
         self.output_dir = output_dir
+        self.checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
+        if dist.get_rank() == 0:
+            os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         self._load_and_sync_parameters()
         if self.use_fp16:
@@ -114,7 +117,7 @@ class TrainLoop:
             self.ddp_model = self.model
 
     def _load_and_sync_parameters(self):
-        resume_checkpoint = find_resume_checkpoint(self.output_dir) or self.resume_checkpoint
+        resume_checkpoint = find_resume_checkpoint(self.checkpoint_dir) or self.resume_checkpoint
 
         if resume_checkpoint:
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
@@ -131,7 +134,7 @@ class TrainLoop:
     def _load_ema_parameters(self, rate):
         ema_params = copy.deepcopy(self.master_params)
 
-        main_checkpoint = find_resume_checkpoint(self.output_dir) or self.resume_checkpoint
+        main_checkpoint = find_resume_checkpoint(self.checkpoint_dir) or self.resume_checkpoint
         ema_checkpoint = find_ema_checkpoint(main_checkpoint, self.resume_step, rate)
         if ema_checkpoint:
             if dist.get_rank() == 0:
@@ -145,7 +148,7 @@ class TrainLoop:
         return ema_params
 
     def _load_optimizer_state(self):
-        main_checkpoint = find_resume_checkpoint(self.output_dir) or self.resume_checkpoint
+        main_checkpoint = find_resume_checkpoint(self.checkpoint_dir) or self.resume_checkpoint
         opt_checkpoint = bf.join(
             bf.dirname(main_checkpoint), f"opt{self.resume_step:06}.pt"
         )
@@ -215,10 +218,10 @@ class TrainLoop:
             )
 
             if last_batch or not self.use_ddp:
-                losses = compute_losses()
+                losses, samples = compute_losses()
             else:
                 with self.ddp_model.no_sync():
-                    losses = compute_losses()
+                    losses, samples = compute_losses()
 
             if isinstance(self.schedule_sampler, LossAwareSampler):
                 self.schedule_sampler.update_with_local_losses(
@@ -229,11 +232,16 @@ class TrainLoop:
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
+            if i == 0 and (self.step % self.log_interval == 0):
+                self._log_images(samples)
             if self.use_fp16:
                 loss_scale = 2 ** self.lg_loss_scale
                 (loss * loss_scale).backward()
             else:
                 loss.backward()
+
+            if self.step % 100 == 0:
+                logger.log()
 
     def optimize_fp16(self):
         if any(not th.isfinite(p.grad).all() for p in self.model_params):
@@ -272,6 +280,18 @@ class TrainLoop:
         for param_group in self.opt.param_groups:
             param_group["lr"] = lr
 
+    def _log_images(self, samples):
+        if dist.get_rank() != 0:
+            return
+        log_step = self.step + self.resume_step
+        for key in samples.keys():
+            tensor = samples.get(key)
+            if tensor is None:
+                continue
+            if not isinstance(tensor, th.Tensor):
+                continue
+            logger.log_image(f"train/{key}", tensor[:4], log_step)
+
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)
         logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
@@ -287,7 +307,7 @@ class TrainLoop:
                     filename = f"model{(self.step+self.resume_step):06d}.pt"
                 else:
                     filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
-                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                with bf.BlobFile(bf.join(self.checkpoint_dir, filename), "wb") as f:
                     th.save(state_dict, f)
 
         save_checkpoint(0, self.master_params)
@@ -296,7 +316,7 @@ class TrainLoop:
 
         if dist.get_rank() == 0:
             with bf.BlobFile(
-                bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
+                bf.join(self.checkpoint_dir, f"opt{(self.step+self.resume_step):06d}.pt"),
                 "wb",
             ) as f:
                 th.save(self.opt.state_dict(), f)

@@ -32,7 +32,9 @@
                 "--diffusion_type",
                 "poisson",
                 "--gpu",
-                "1"
+                "2",
+                "--test_run",
+                "True"
             ],
             "env": {}
         },
@@ -44,11 +46,11 @@
             "console": "integratedTerminal",
             "args": [
                 "--dataset",
-                "DRIVE",
+                "OCTA500_6M",
                 "--data_dir",
-                "data/DRIVE",
+                "data/OCTA500_6M",
                 "--model_path",
-                "workdir/OCTA500_6M-FRUnet/ema_0.9999_050000.pt",
+                "workdir/poisson-OCTA500_6M-FRUnet/checkpoints/ema_0.9999_050000.pt",
                 "--image_size",
                 "256",
                 "--num_channels",
@@ -62,9 +64,27 @@
                 "--batch_size",
                 "4",
                 "--prior_model",
-                "FRUnet",
+                "Unet",
                 "--gpu",
-                "0"
+                "3",
+                "--diffusion_type",
+                "poisson",
+                "--test_run",
+                "True"
+            ],
+            "env": {}
+        },
+        {
+            "name": "eval",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "src/scripts/create_table.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--dataset",
+                "OCTA500_6M",
+                "--diffusion-type",
+                "gaussian"
             ],
             "env": {}
         }

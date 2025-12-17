@@ -84,3 +84,15 @@ def _find_free_port():
         return s.getsockname()[1]
     finally:
         s.close()
+
+
+def _parse_device_id(gpu_dev):
+    if not gpu_dev:
+        return None
+    device = gpu_dev.split(",")[0].strip()
+    if not device:
+        return None
+    try:
+        return int(device)
+    except ValueError:
+        return None

@@ -6,9 +6,10 @@ import argparse
 
 import autorootcwd
 
-from improved_diffusion.resample import create_named_schedule_sampler
 from src.data.image_datasets import load_data
+from src.diffusion.resample import create_named_schedule_sampler
 from src.loggings import logger
+from src.loggings.run_history import append_run_history
 from src.scripts.script_util import add_dict_to_argparser, args_to_dict, create_model_and_diffusion, model_and_diffusion_defaults
 from src.training import dist_util
 from src.training.train_utils import TrainLoop
@@ -18,8 +19,17 @@ def main():
     args = create_argparser().parse_args()
 
     dist_util.setup_dist(args.gpu)
-    output_dir = f"workdir/{args.diffusion_type}-{args.dataset}-{args.prior_model}"
-    logger.configure(dir=output_dir, format_strs=["stdout", "log", "csv", "tensorboard"])
+    base_output = "test-run" if args.test_run else "workdir"
+    output_dir = f"{base_output}/{args.diffusion_type}/{args.dataset}-{args.prior_model}"
+    experiment_name = f"{args.diffusion_type}-{args.dataset}-{args.prior_model}"
+    logger.configure(dir=output_dir, format_strs=["stdout", "log", "csv", "tensorboard"], experiment_name=experiment_name)
+
+    append_run_history(
+        args,
+        mode="train",
+        command="image_train",
+        output_dir=output_dir,
+    )
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
@@ -57,7 +67,7 @@ def main():
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
         output_dir=output_dir,
-    ).run_loop(step_limit=200000)
+    ).run_loop(step_limit=100000)
 
 
 def create_argparser():
@@ -71,13 +81,14 @@ def create_argparser():
         batch_size=1,
         microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
-        log_interval=10,
+        log_interval=200,
         save_interval=2000,
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,
         gpu="1",
         prior_model='FRUnet',
+        test_run=False,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

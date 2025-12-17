@@ -6,9 +6,14 @@ results/
 samples/
 workdir/
 .vscode/
+.vscode/launch.json
 .github/
 scripts/
 notebooks/
+test-run/
+# .python-version
+# pyproject.toml
+# uv.lock
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -227,3 +232,4 @@ __marimo__/
 .streamlit/secrets.toml
 src/scripts/script_util.py
 .gitignore
+

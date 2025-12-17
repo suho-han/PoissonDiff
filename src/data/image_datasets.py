@@ -1,5 +1,6 @@
 import os
 import random
+from io import BytesIO
 
 import blobfile as bf
 import numpy as np
@@ -11,10 +12,9 @@ from torch.utils.data import DataLoader, Dataset
 
 
 def _load_pil_image(path):
-    with bf.BlobFile(path, "rb") as f:
-        pil_image = Image.open(f)
-        pil_image.load()
-    return pil_image
+    data = open(path, "rb").read()
+    data = Image.open(BytesIO(data))
+    return data
 
 
 def load_data(
@@ -98,10 +98,11 @@ class ImageDataset(Dataset):
 
         # train transforms
         if self.mode == 'train':
-            resize = transforms.Resize((self.resolution, self.resolution), interpolation=Image.BICUBIC)
-            pil_image = resize(pil_image)
-            pil_input = resize(pil_input)
-            pil_target = resize(pil_target)
+            crop_size = (self.resolution, self.resolution)
+            i, j, h, w = transforms.RandomCrop.get_params(pil_image, crop_size)
+            pil_image = transforms.functional.crop(pil_image, i, j, h, w)
+            pil_input = transforms.functional.crop(pil_input, i, j, h, w)
+            pil_target = transforms.functional.crop(pil_target, i, j, h, w)
             # get random parameters
             # limit rotations to multiples of 90 degrees to avoid interpolation artifacts
             angle = random.choice([0, 90, 180, 270])

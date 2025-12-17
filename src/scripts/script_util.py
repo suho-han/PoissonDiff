@@ -7,7 +7,8 @@ import torch as th
 from src.diffusion import binomial_diffusion as bd
 from src.diffusion import gaussian_diffusion as gd
 from src.diffusion import prior_binomial_diffusion as pbd
-from src.diffusion.respace import SpacedDiffusion, space_timesteps
+from src.diffusion import prior_poisson_diffusion as ppd
+from src.diffusion.respace import GaussianSpacedDiffusion, PoissonSpacedDiffusion, SpacedDiffusion, space_timesteps
 from src.model.unet import SegmentationModel
 
 
@@ -173,8 +174,8 @@ def create_gaussian_diffusion(
         model_mean = gd.ModelMeanType.PREVIOUS_Y
     else:
         raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
-
-    return gd.GaussianDiffusion(
+    return GaussianSpacedDiffusion(
+        use_timesteps=space_timesteps(steps, timestep_respacing),
         betas=betas,
         model_mean_type=model_mean,
         loss_type=gd.LossType.MSE,
@@ -229,29 +230,29 @@ def create_priorpoisson_diffusion(
     rescale_timesteps=False,
     timestep_respacing="",
 ):
-    betas = pbd.get_named_beta_schedule(noise_schedule, steps)
+    betas = ppd.get_named_beta_schedule(noise_schedule, steps)
     if ltype == "rescale_kl":
-        loss_type = pbd.LossType.RESCALED_KL
+        loss_type = ppd.LossType.RESCALED_KL
     elif ltype == "kl":
-        loss_type = pbd.LossType.KL
+        loss_type = ppd.LossType.KL
     elif ltype == "bce":
-        loss_type = pbd.LossType.BCE
+        loss_type = ppd.LossType.BCE
     elif ltype == "mix":
-        loss_type = pbd.LossType.MIX
+        loss_type = ppd.LossType.MIX
     else:
         raise NotImplementedError(f"unknown LossType: {ltype}")
     if not timestep_respacing:
         timestep_respacing = [steps]
     if mean_type == "ystart":
-        model_mean = pbd.ModelMeanType.START_Y
+        model_mean = ppd.ModelMeanType.START_Y
     elif mean_type == "epsilon":
-        model_mean = pbd.ModelMeanType.EPSILON
+        model_mean = ppd.ModelMeanType.EPSILON
     elif mean_type == "previous":
-        model_mean = pbd.ModelMeanType.PREVIOUS_Y
+        model_mean = ppd.ModelMeanType.PREVIOUS_Y
     else:
         raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
 
-    return SpacedDiffusion(
+    return PoissonSpacedDiffusion(
         use_timesteps=space_timesteps(steps, timestep_respacing),
         betas=betas,
         model_mean_type=model_mean,

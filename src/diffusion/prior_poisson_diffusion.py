@@ -160,7 +160,7 @@ class PriorPoissonDiffusion:
         theta_2 = (_extract_into_tensor(self.alphas, t, y_start.shape) * y_t + (1 - _extract_into_tensor(self.alphas, t, y_start.shape)) * (torch.abs(1-y_t-p))) * \
             (_extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape) * y_start + (1 - _extract_into_tensor(self.alphas_cumprod, t-1, y_start.shape)) * p)
 
-        posterior_mean = theta_2 / (theta_1 + theta_2)
+        posterior_mean = theta_2 / (theta_1 + theta_2 + 1e-8)
 
         return posterior_mean
 
@@ -547,8 +547,13 @@ class PriorPoissonDiffusion:
             terms["loss"] = mean_flat(-poisson_log_likelihood(target, lambdas=model_output)) / np.log(2.0)
         else:
             raise NotImplementedError(self.loss_type)
-
-        return terms
+        samples = {}
+        samples["f(x)"] = model_kwargs["prior"][0]
+        samples["y_t"] = y_t[0]
+        samples["y_start"] = y_start[0]
+        samples["model_output"] = model_output[0]
+        samples["image"] = model_kwargs["img"][0]
+        return terms, samples
 
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):

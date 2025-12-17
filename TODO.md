@@ -5,7 +5,9 @@
 [ ]  Image concat 방식 변경
 [x] 11/13 OCTA Dataset에 대해 학습
 [ ] BerDiff에 prev. output의 thickness/SAUNA 대입
-[ ] 11/24 BerDiff의 Bernoulli Sampling -> Poisson Sampling
+[x] 11/24 BerDiff의 Bernoulli Sampling -> Poisson Sampling
+[x] Bernoulli -> Gaussian
+[ ] Betti error 확인
 
 ## packages
 

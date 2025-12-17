@@ -546,8 +546,14 @@ class PriorBinomialDiffusion:
             terms["loss"] = mean_flat(-binomial_log_likelihood(target, means=model_output)) / np.log(2.0)
         else:
             raise NotImplementedError(self.loss_type)
+        samples = {}
+        samples["f(x)"] = model_kwargs["prior"][0]
+        samples["y_t"] = y_t[0]
+        samples["y_start"] = y_start[0]
+        samples["model_output"] = model_output[0]
+        samples["image"] = model_kwargs["img"][0]
 
-        return terms
+        return terms, samples
 
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):

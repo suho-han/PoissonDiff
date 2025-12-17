@@ -196,7 +196,7 @@ class GaussianDiffusion:
                     self._predict_ystart_from_eps(y_t=y, t=t, eps=model_output)
                 )
             model_mean = self.q_posterior_mean(
-                y_start=pred_ystart, y_t=y, p=model_kwargs["prior"], t=t
+                y_start=pred_ystart, y_t=y, t=t
             )
             model_mean = torch.where((t == 0)[:, None, None, None], pred_ystart, model_mean)
         else:
@@ -419,7 +419,7 @@ class GaussianDiffusion:
             noise=noise,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
-            eta=0.0,
+            # eta=0.0,
             device=device,
             progress=progress,
         )):
@@ -485,7 +485,7 @@ class GaussianDiffusion:
                  - 'output': a shape [N] tensor of NLLs or KLs.
                  - 'pred_ystart': the y_0 predictions.
         """
-        true_mean = self.q_posterior_mean(y_start=y_start, y_t=y_t, p=model_kwargs["prior"], t=t)
+        true_mean = self.q_posterior_mean(y_start=y_start, y_t=y_t, t=t)
         out = self.p_mean(model, y_t, t, model_kwargs=model_kwargs)
         kl = normal_kl(true_mean, out["mean"])
 
@@ -528,8 +528,14 @@ class GaussianDiffusion:
             terms["loss"] = mean_flat((target - model_output) ** 2)
         else:
             raise NotImplementedError(self.loss_type)
+        samples = {}
+        samples["f(x)"] = model_kwargs["prior"][0]
+        samples["y_t"] = y_t[0]
+        samples["y_start"] = y_start[0]
+        samples["model_output"] = model_output[0]
+        samples["image"] = model_kwargs["img"][0]
 
-        return terms
+        return terms, samples
 
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
