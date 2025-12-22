@@ -67,7 +67,7 @@ def main():
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
         output_dir=output_dir,
-    ).run_loop(step_limit=100000)
+    ).run_loop(step_limit=args.total_steps)
 
 
 def create_argparser():
@@ -89,6 +89,7 @@ def create_argparser():
         gpu="1",
         prior_model='FRUnet',
         test_run=False,
+        total_steps=500000,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

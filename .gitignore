@@ -8,9 +8,11 @@ workdir/
 .vscode/
 .vscode/launch.json
 .github/
-scripts/
 notebooks/
 test-run/
+alert.py
+train.sh
+test.sh
 # .python-version
 # pyproject.toml
 # uv.lock
