@@ -42,7 +42,7 @@ TEX_DIR = RESULTS_DIR / "tex"
 
 def _get_workdir_path(dataset: str, model: str, sampling_method: str = "") -> Path:
     """Create the expected workdir path for a given config."""
-    dir_name = f"{sampling_method}/{dataset}-{model}" if sampling_method else f"{dataset}-{model}"
+    dir_name = f"{sampling_method}/{dataset}-{model}"
     return WORKDIR_DIR / dir_name
 
 
@@ -241,17 +241,11 @@ def evaluate_results(
     df_final = pd.concat([pd.DataFrame([overall_data]), df], ignore_index=True)
 
     suffix = "" if prediction_type == "final" else f"-{prediction_type}"
-    file_name = (
-        f"{sampling_method}/{dataset}-{model}{suffix}.csv"
-        if sampling_method
-        else f"{dataset}-{model}{suffix}.csv"
-    )
-    os.makedirs(METRICS_DIR / sampling_method, exist_ok=True)
-    out_csv = METRICS_DIR / file_name
-    df_final.to_csv(out_csv, index=False)
-    result_csv = work_path / f"metrics-{epoch:06d}{suffix}.csv"
-    df_final.to_csv(result_csv, index=False)
-    logger.info(f"Saved metrics to: {out_csv}")
+    # 통일된 metrics 경로: results/metrics/{sampling_method}/{dataset}-{model}/metrics-{epoch:06d}{suffix}.csv
+    metrics_csv_path = METRICS_DIR / sampling_method / f"{dataset}-{model}" / f"metrics-{epoch:06d}{suffix}.csv"
+    os.makedirs(metrics_csv_path.parent, exist_ok=True)
+    df_final.to_csv(metrics_csv_path, index=False)
+    logger.info(f"Saved metrics to: {metrics_csv_path}")
 
 
 def load_model_metrics(
@@ -259,19 +253,14 @@ def load_model_metrics(
     model: str,
     sampling_method: str = "",
     prediction_type: str = "final",
+    epoch: int = 50000,
 ) -> Optional[Dict[str, Union[str, float]]]:
     """Load averaged metrics row from CSV if present."""
     suffix = "" if prediction_type == "final" else f"-{prediction_type}"
-    file_name = (
-        f"{sampling_method}/{dataset}-{model}{suffix}.csv"
-        if sampling_method
-        else f"{dataset}-{model}{suffix}.csv"
-    )
-    os.makedirs(METRICS_DIR / sampling_method, exist_ok=True)
-    csv_path = METRICS_DIR / file_name
-
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
+    # 통일된 metrics 경로: results/metrics/{sampling_method}/{dataset}-{model}/metrics-{epoch:06d}{suffix}.csv
+    metrics_csv_path = METRICS_DIR / sampling_method / f"{dataset}-{model}" / f"metrics-{epoch:06d}{suffix}.csv"
+    if metrics_csv_path.exists():
+        df = pd.read_csv(metrics_csv_path)
         if "file" in df.columns:
             df.rename(columns={"file": "file_name"}, inplace=True)
 
