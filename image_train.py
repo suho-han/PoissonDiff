@@ -10,9 +10,9 @@ from src.data.image_datasets import load_data
 from src.diffusion.resample import create_named_schedule_sampler
 from src.loggings import logger
 from src.loggings.run_history import append_run_history
-from src.scripts.script_util import add_dict_to_argparser, args_to_dict, create_model_and_diffusion, model_and_diffusion_defaults
 from src.training import dist_util
 from src.training.train_utils import TrainLoop
+from src.utils.script_util import add_dict_to_argparser, args_to_dict, create_model_and_diffusion, model_and_diffusion_defaults
 
 
 def main():

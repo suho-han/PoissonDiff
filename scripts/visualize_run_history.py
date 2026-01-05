@@ -90,6 +90,7 @@ def save_tables(history: List[Dict[str, Any]], output_path: Path) -> None:
         "Diffusion",
         "Dataset",
         "Prior",
+        "Epoch",
     ]
     rows_timeline: List[List[Any]] = []
     for idx, item in enumerate(history, start=1):
@@ -100,6 +101,7 @@ def save_tables(history: List[Dict[str, Any]], output_path: Path) -> None:
             item.get("diffusion_type", "unknown"),
             item.get("dataset", "-"),
             item.get("prior_model", "-"),
+            item.get("epoch", "-"),
         ])
 
     # Table 3: Compact per-run details
@@ -110,10 +112,11 @@ def save_tables(history: List[Dict[str, Any]], output_path: Path) -> None:
         "#",
         "Timestamp (KST)",
         "Mode",
-        "Command",
+        "PID",
         "Diffusion",
         "Dataset",
         "Prior",
+        "Epoch",
         "Batch",
         "LR",
         "FP16",
@@ -129,10 +132,11 @@ def save_tables(history: List[Dict[str, Any]], output_path: Path) -> None:
             idx,
             safe_ts(item),
             item.get("mode", "unknown"),
-            item.get("command", "-"),
+            item.get("pid", "-"),
             item.get("diffusion_type", "unknown"),
             item.get("dataset", "-"),
             item.get("prior_model", "-"),
+            item.get("epoch", "-"),
             item.get("batch_size", "-"),
             item.get("lr", "-"),
             fmt_bool(item.get("use_fp16")),

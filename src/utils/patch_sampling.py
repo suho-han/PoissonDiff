@@ -7,7 +7,16 @@ import math
 import torch
 
 
-def patch_sample(sample_fn, model, image, prior, input_size, overlap, model_kwargs):
+def patch_sample(
+    sample_fn,
+    model,
+    image,
+    prior,
+    input_size,
+    patches_per_dim=None,
+    overlap=None,
+    model_kwargs=None,
+):
     """
     Sample large images by dividing them into patches with configurable overlap.
 
@@ -17,8 +26,8 @@ def patch_sample(sample_fn, model, image, prior, input_size, overlap, model_kwar
         image: Input image tensor of shape (B, C, H, W)
         prior: Prior tensor of shape (B, C, H, W)
         input_size: Size of patches to feed into the model
-        target_size: Size of the full image
-        overlap: Overlap between adjacent patches
+        patches_per_dim: Desired number of patches along each dimension (height/width)
+        overlap: Optional overlap between adjacent patches (used only when patches_per_dim is not set)
         model_kwargs: Additional model keyword arguments
         batch_size: Batch size for processing
 
@@ -28,12 +37,17 @@ def patch_sample(sample_fn, model, image, prior, input_size, overlap, model_kwar
     device = image.device
     B, C, H, W = image.shape
 
-    # Calculate stride from overlap
-    stride = input_size - overlap
+    # Derive stride from desired patch count; fall back to overlap-based stride.
+    if patches_per_dim is not None and patches_per_dim > 1:
+        stride_h = math.ceil(max(H - input_size, 0) / (patches_per_dim - 1)) if H > input_size else input_size
+        stride_w = math.ceil(max(W - input_size, 0) / (patches_per_dim - 1)) if W > input_size else input_size
+    else:
+        overlap_val = overlap if overlap is not None else 0
+        stride_h = stride_w = max(1, input_size - overlap_val)
 
-    # Calculate number of patches needed
-    num_patches_h = math.ceil((H - input_size) / stride) + 1 if H > input_size else 1
-    num_patches_w = math.ceil((W - input_size) / stride) + 1 if W > input_size else 1
+    # Calculate number of patches needed per dimension
+    num_patches_h = math.ceil((H - input_size) / stride_h) + 1 if H > input_size else 1
+    num_patches_w = math.ceil((W - input_size) / stride_w) + 1 if W > input_size else 1
 
     # Initialize output tensor
     output = torch.zeros((B, C, H, W), device=device)
@@ -45,8 +59,8 @@ def patch_sample(sample_fn, model, image, prior, input_size, overlap, model_kwar
         for j in range(num_patches_w):
             print(f"Sampling patch ({i+1}/{num_patches_h}, {j+1}/{num_patches_w})")
             # Calculate patch coordinates
-            start_h = min(i * stride, H - input_size)
-            start_w = min(j * stride, W - input_size)
+            start_h = min(i * stride_h, H - input_size)
+            start_w = min(j * stride_w, W - input_size)
             end_h = start_h + input_size
             end_w = start_w + input_size
 

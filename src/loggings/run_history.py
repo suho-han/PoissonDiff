@@ -1,7 +1,10 @@
 import datetime
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
+
+import autorootcwd
 
 
 def _read_history(path: Path) -> List[Dict[str, Any]]:
@@ -60,6 +63,7 @@ def append_run_history(args: Any, mode: str, command: str, **extra: Any) -> None
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "mode": mode,
         "command": command,
+        "pid": os.getpid(),
         **_pluck_args(args, common_keys),
         **extra,
     }

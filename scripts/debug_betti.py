@@ -9,7 +9,7 @@ import numpy as np
 from natsort import natsorted
 from PIL import Image
 
-from src.scripts.create_table import _get_workdir_path, compute_betti_numbers
+from src.utils.create_table import _get_workdir_path, compute_betti_numbers
 
 
 def _load_pairs(result_path: Path) -> Iterable[Tuple[Path, Path]]:

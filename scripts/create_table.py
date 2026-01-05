@@ -17,12 +17,12 @@ from matplotlib import pyplot as plt
 from natsort import natsorted
 from PIL import Image
 
-from src.scripts.evaluate import DEFAULT_MODELS, FIGURES_DIR, METRICS, METRICS_DIR, PREDICTION_PATTERNS, RESULTS_DIR, TEX_DIR, WORKDIR_DIR, _get_workdir_path, evaluate_results, load_model_metrics
+from src.utils.evaluate import DEFAULT_MODELS, FIGURES_DIR, METRICS, METRICS_DIR, PREDICTION_PATTERNS, RESULTS_DIR, TEX_DIR, WORKDIR_DIR, _get_workdir_path, evaluate_results, load_model_metrics
 
 
 def _agg_reformat_file(*args, **kwargs):
     try:
-        from src.scripts.reformat_table import reformat_file as _rf
+        from scripts.reformat_table import reformat_file as _rf
         return _rf(*args, **kwargs)
     except Exception:
         pass
@@ -68,12 +68,12 @@ def _agg_extract_table_content(tex_path):
 
 def aggregate_tables_main():
     files = []
-    for method in ["poisson", "binomial", "gaussian"]:
+    for method in ALL_SAMPLING_METHODS:
         pattern = str(_AGG_RESULTS_DIR / f"sample_{method}_OCTA500_6M_*.tex")
         method_files = [f for f in sorted(glob(pattern)) if "input" not in os.path.basename(f)]
         files.extend(method_files)
     input_tables = {}
-    for method in ["poisson", "binomial", "gaussian"]:
+    for method in ALL_SAMPLING_METHODS:
         input_pattern = str(_AGG_RESULTS_DIR / f"sample_{method}_OCTA500_6M_input_*.tex")
         input_files = sorted(glob(input_pattern))
         if input_files:
@@ -91,7 +91,11 @@ def aggregate_tables_main():
     method_tables = _agg_defaultdict(list)
     for f in files:
         fname = os.path.basename(f)
-        method = fname.split("_")[1]
+        # Extract method name using regex to handle multi-word methods like 'poisson_flow'
+        match = re.search(r'sample_(.+?)_OCTA500_6M_', fname)
+        if not match:
+            continue
+        method = match.group(1)
         epoch = fname.split("_")[-1].replace(".tex", "")
         table_content = _agg_extract_table_content(f)
         if table_content:
@@ -102,7 +106,7 @@ def aggregate_tables_main():
     output_str += "\\usepackage{booktabs, amssymb, amsmath, graphicx}\n"
     output_str += "\\usepackage[a4paper,margin=1cm,landscape]{geometry}\n"
     output_str += "\\begin{document}\n"
-    for i, method in enumerate(["poisson", "binomial", "gaussian"]):
+    for i, method in enumerate(ALL_SAMPLING_METHODS):
         if method_tables[method]:
             output_str += _AGG_TABLE_HEADER
             all_rows = []
@@ -168,7 +172,8 @@ def aggregate_tables_main():
                 if idx < len(epoch_tables) - 1:
                     all_rows.append(r'                \midrule')
             output_str += "\n".join(all_rows) + "\n"
-            output_str += _AGG_TABLE_FOOTER % f"OCTA500 6M/{method.capitalize()} (All Epochs)"
+            method_display = method.replace('_', '\\_').capitalize()
+            output_str += _AGG_TABLE_FOOTER % f"OCTA500 6M\\slash {method_display} (All Epochs)"
     output_str += "\\end{document}\n"
     with open(_AGG_OUTPUT_PATH, "w", encoding="utf-8") as out:
         out.write(output_str)
@@ -581,7 +586,7 @@ def write_overall_latex_table(
 
 
 ALL_DATASETS = ["DRIVE", "OCTA500_3M", "OCTA500_6M"]
-ALL_SAMPLING_METHODS = ["gaussian", "binomial", "poisson"]
+ALL_SAMPLING_METHODS = ["gaussian", "binomial", "poisson", "poisson_flow"]
 ALL_PREDICTION_TYPES = list(PREDICTION_PATTERNS.keys())
 
 
@@ -618,7 +623,7 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
 
     # epoch 리스트 처리 (기본값)
     if not epochs:
-        epochs = (100000, 500000)
+        epochs = (100_000, 200_000, 500_000, 950_000)
 
     # if delete_results 옵션 처리
     if delete_results and RESULTS_DIR.exists():

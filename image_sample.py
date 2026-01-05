@@ -16,10 +16,10 @@ from tqdm import tqdm
 from src.data.image_datasets import load_data
 from src.loggings import logger
 from src.loggings.run_history import append_run_history
-from src.scripts.patch_sampling import patch_sample
-from src.scripts.script_util import add_dict_to_argparser, args_to_dict, create_model_and_diffusion, model_and_diffusion_defaults
-from src.scripts.tensor_io import save_tensor_as_npy
 from src.training import dist_util
+from src.utils.patch_sampling import patch_sample
+from src.utils.script_util import add_dict_to_argparser, args_to_dict, create_model_and_diffusion, model_and_diffusion_defaults
+from src.utils.tensor_io import save_tensor_as_npy
 
 NUM_CLASSES = 1
 
@@ -79,19 +79,20 @@ def main():
             )
             model_kwargs["y"] = classes
         sample_fn = (
-            diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
+            diffusion.p_sample_loop if not args.use_ddim
+            else diffusion.sample if args.diffusion_type == "poisson_flow"
+            else diffusion.ddim_sample_loop
         )
 
         with torch.inference_mode():
             if image.shape[2] > args.image_size or image.shape[3] > args.image_size:
-                overlap = max(0, min(args.image_size - 1, args.image_size - args.stride))
                 sample, intermediates = patch_sample(
                     sample_fn=sample_fn,
                     model=model,
                     image=image.to(dist_util.dev()),
                     prior=input.to(dist_util.dev()),
                     input_size=args.image_size,
-                    overlap=overlap,
+                    patches_per_dim=args.patches_per_dim,
                     model_kwargs=model_kwargs,
                 )
             else:
@@ -137,7 +138,7 @@ def create_argparser():
         model_path="",
         gpu="2",
         prior_model='FRUnet',
-        stride=64,  # Stride for patch-based sampling of large images
+        patches_per_dim=2,  # Number of patches per dimension for large images
         test_run=False,
     )
     defaults.update(model_and_diffusion_defaults())

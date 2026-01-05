@@ -1,6 +1,7 @@
 import argparse
 import io
 
+import autorootcwd
 import blobfile as bf
 import torch as th
 
@@ -9,6 +10,7 @@ from src.diffusion import gaussian_diffusion as gd
 from src.diffusion import prior_binomial_diffusion as pbd
 from src.diffusion import prior_poisson_diffusion as ppd
 from src.diffusion.respace import GaussianSpacedDiffusion, PoissonSpacedDiffusion, SpacedDiffusion, space_timesteps
+from src.flow.poisson_flow import PoissonFlow
 from src.model.unet import SegmentationModel
 
 
@@ -99,6 +101,12 @@ def create_model_and_diffusion(
             mean_type=mean_type,
             rescale_timesteps=rescale_timesteps,
             timestep_respacing=timestep_respacing,
+        )
+    elif diffusion_type == "poisson_flow":
+        diffusion = PoissonFlow(
+            num_timesteps=100,
+            t_min=0.0,
+            t_max=1.0,
         )
     else:
         raise NotImplementedError(f"unknown diffusion type: {diffusion_type}")

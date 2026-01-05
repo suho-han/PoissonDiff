@@ -314,12 +314,12 @@ class TrainLoop:
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
 
-        if dist.get_rank() == 0:
-            with bf.BlobFile(
-                bf.join(self.checkpoint_dir, f"opt{(self.step+self.resume_step):06d}.pt"),
-                "wb",
-            ) as f:
-                th.save(self.opt.state_dict(), f)
+        # if dist.get_rank() == 0:
+        #     with bf.BlobFile(
+        #         bf.join(self.checkpoint_dir, f"opt{(self.step+self.resume_step):06d}.pt"),
+        #         "wb",
+        #     ) as f:
+        #         th.save(self.opt.state_dict(), f)
 
         dist.barrier()
 
