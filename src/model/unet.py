@@ -477,6 +477,6 @@ class SegmentationModel(UNetModel):
     def __init__(self, in_channels, img_channels, *args, **kwargs):
         super().__init__(in_channels + img_channels, *args, **kwargs)
 
-    def forward(self, x, timesteps, prior, **kwargs):
-        x = th.cat([x, prior], dim=1)
+    def forward(self, x, timesteps, img, **kwargs):
+        x = th.cat([x, img], dim=1)
         return super().forward(x, timesteps)

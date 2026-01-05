@@ -26,6 +26,7 @@ class PoissonFlow(nn.Module):
         """
         # 1. Sample x_0 and t
         x_0 = model_kwargs["prior"]
+        img = model_kwargs["img"]
         b, c, h, w = x_1.shape
         # Sample x_0 from a Poisson distribution (lambda=1.0 as default)
         x_0 = torch.poisson(x_0)
@@ -37,10 +38,7 @@ class PoissonFlow(nn.Module):
 
         # 3. Model prediction and loss calculation
         # Try to call with prior if model requires it
-        try:
-            pred = model(x_t, t, x_0)
-        except TypeError:
-            pred = model(x_t, t)
+        pred = model(x_t, t, img=img)
         loss = F.mse_loss(pred, target, reduction='none')
 
         samples = {}

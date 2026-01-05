@@ -175,7 +175,7 @@ class GaussianDiffusion:
 
         B = y.shape[0]
         assert t.shape == (B,)
-        model_output = model(y, self._scale_timesteps(t), **model_kwargs)
+        model_output = model(y, self._scale_timesteps(t), img=model_kwargs["img"])
 
         def process_ystart(y):
             if denoised_fn is not None:
