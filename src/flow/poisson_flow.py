@@ -27,9 +27,6 @@ class PoissonFlow(nn.Module):
         # 1. Sample x_0 and t
         x_0 = model_kwargs["prior"]
         img = model_kwargs["img"]
-        b, c, h, w = x_1.shape
-        # Sample x_0 from a Poisson distribution (lambda=1.0 as default)
-        x_0 = torch.poisson(x_0)
         t_expand = self.get_time_embedding(t, x_0.shape)
 
         # 2. Generate x_t and calculate target vector
@@ -38,7 +35,7 @@ class PoissonFlow(nn.Module):
 
         # 3. Model prediction and loss calculation
         # Try to call with prior if model requires it
-        pred = model(x_t, t, img=img)
+        pred = model(x=x_t, timesteps=t, img=img)
         loss = F.mse_loss(pred, target, reduction='none')
 
         samples = {}
@@ -50,7 +47,7 @@ class PoissonFlow(nn.Module):
         return {"loss": loss.flatten(1).mean(1)}, samples
 
     @torch.no_grad()
-    def sample(self, model, shape, model_kwargs, *args, **kwargs):
+    def sample(self, model, model_kwargs, *args, **kwargs):
         """
         Euler Method ODE Solver
         dX_t = v(X_t, t) dt
