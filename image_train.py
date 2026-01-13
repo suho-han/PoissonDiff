@@ -20,9 +20,9 @@ def main():
 
     dist_util.setup_dist(args.gpu)
     base_output = "test-run" if args.test_run else "workdir"
-    output_dir = f"{base_output}/{args.diffusion_type}/{args.dataset}-{args.prior_model}"
-    experiment_name = f"{args.diffusion_type}-{args.dataset}-{args.prior_model}"
-    logger.configure(dir=output_dir, format_strs=["stdout", "log", "csv", "tensorboard"], experiment_name=experiment_name)
+    experiment_name = f"{args.diffusion_type}-{args.ltype}-{'imgenc' if args.image_encoder else 'concat'}/{args.dataset}-{args.prior_model}"
+    output_dir = f"{base_output}/{experiment_name}"
+    logger.configure(dir=output_dir, format_strs=["stdout", "log", "csv", "tensorboard", "wandb"], experiment_name=experiment_name)
 
     append_run_history(
         args,
@@ -47,6 +47,7 @@ def main():
         model=args.prior_model,
         mode='train',
         deterministic=True,
+        refine=args.refine,
     )
 
     logger.log("training...")
@@ -67,6 +68,7 @@ def main():
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
         output_dir=output_dir,
+        refine=args.refine,
     ).run_loop(step_limit=args.total_steps)
 
 
@@ -82,14 +84,17 @@ def create_argparser():
         microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
         log_interval=200,
-        save_interval=2000,
+        save_interval=10000,
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,
-        gpu="1",
+        gpu="0",
         prior_model='FRUnet',
         test_run=False,
         total_steps=500000,
+        ltype='mix',
+        image_encoder=False,
+        refine=False,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

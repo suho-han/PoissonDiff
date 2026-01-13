@@ -16,8 +16,17 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from natsort import natsorted
 from PIL import Image
+from tqdm import tqdm
 
 from src.utils.evaluate import DEFAULT_MODELS, FIGURES_DIR, METRICS, METRICS_DIR, PREDICTION_PATTERNS, RESULTS_DIR, TEX_DIR, WORKDIR_DIR, _get_workdir_path, evaluate_results, load_model_metrics
+
+LOG_FILE = Path("table.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")],
+)
 
 
 def _agg_reformat_file(*args, **kwargs):
@@ -172,29 +181,133 @@ def aggregate_tables_main():
                 if idx < len(epoch_tables) - 1:
                     all_rows.append(r'                \midrule')
             output_str += "\n".join(all_rows) + "\n"
-            method_display = method.replace('_', '\\_').capitalize()
+            method_display = method.replace('_', ' ').capitalize()
             output_str += _AGG_TABLE_FOOTER % f"OCTA500 6M\\slash {method_display} (All Epochs)"
     output_str += "\\end{document}\n"
     with open(_AGG_OUTPUT_PATH, "w", encoding="utf-8") as out:
         out.write(output_str)
-    print(f"Aggregated results saved at {_AGG_OUTPUT_PATH}")
+    logger.info(f"Aggregated results saved at {_AGG_OUTPUT_PATH}")
+    _compile_latex(_AGG_OUTPUT_PATH)
+    logger.info(f"Aggregated results saved at {_AGG_OUTPUT_PATH.with_suffix('.pdf')}")
     _agg_reformat_file(_AGG_OUTPUT_PATH)
 
 
-# Ensure running from project root if available; ignore if missing
-try:
-    import autorootcwd  # noqa: F401
-except Exception:
-    pass
-
-try:
-    from tqdm import tqdm
-except Exception:  # Fallback if tqdm is unavailable
-    def tqdm(iterable, **kwargs):
-        return iterable
-
-
 logger = logging.getLogger(__name__)
+
+
+def create_table_methods_at_epoch(epoch: int, dataset: str = "OCTA500_6M"):
+    """Compare all sampling methods at a specific epoch."""
+    output_path = _AGG_RESULTS_DIR / "total" / f"compare_methods_{dataset}_{epoch}.tex"
+
+    # Collect tables for each method
+    method_tables = {}
+
+    # Get "Prev" (input) table
+    for method in ALL_SAMPLING_METHODS:
+        input_pattern = str(_AGG_RESULTS_DIR / f"sample_{method}_{dataset}_input_*.tex")
+        input_files = sorted(glob(input_pattern))
+        if input_files:
+            def extract_epoch_from_input(fname):
+                base = os.path.basename(fname)
+                try:
+                    return int(base.split("_")[-1].replace(".tex", ""))
+                except Exception:
+                    return 0
+            # Find the input file matching this epoch or closest
+            matching_files = [f for f in input_files if str(epoch) in os.path.basename(f)]
+            if matching_files:
+                input_file = matching_files[0]
+            else:
+                input_file = max(input_files, key=extract_epoch_from_input)
+            table_content = _agg_extract_table_content(input_file)
+            if table_content and "Prev" not in method_tables:
+                method_tables["Prev"] = table_content
+                break
+
+    # Get tables for each method at the specified epoch
+    for method in ALL_SAMPLING_METHODS:
+        pattern = str(_AGG_RESULTS_DIR / f"sample_{method}_{dataset}_{epoch}.tex")
+        method_files = glob(pattern)
+        if method_files:
+            table_content = _agg_extract_table_content(method_files[0])
+            if table_content:
+                method_tables[method] = table_content
+
+    if not method_tables:
+        logger.warning(f"No tables found for epoch {epoch}")
+        return
+
+    # Build comparison table
+    output_str = ""
+    output_str += "\\documentclass{article}\n"
+    output_str += "\\usepackage{booktabs, amssymb, amsmath, graphicx}\n"
+    output_str += "\\usepackage[a4paper,margin=1cm,landscape]{geometry}\n"
+    output_str += "\\begin{document}\n"
+
+    output_str += "\\begin{table}[ht]\n"
+    output_str += "    \\centering\n"
+    output_str += "    \\footnotesize\n"
+    output_str += "        \\resizebox{\\textwidth}{!}{%\n"
+    output_str += "            \\begin{tabular}{ccccccccccc}\n"
+    output_str += "                \\toprule\n"
+    output_str += "                Method       & Model     & F1                              & Iou                             & Precision                       & Recall                          & Boundary Ap                     & Boundary Acc                    & Hd95                            & Betti 0 Error                     & Betti 1 Error                   \\\\\n"
+    output_str += "                    \\midrule\n"
+
+    all_rows = []
+
+    # Process each method's table
+    method_order = ["Prev"] + ALL_SAMPLING_METHODS
+    for method in method_order:
+        if method not in method_tables:
+            continue
+
+        lines = method_tables[method].splitlines()
+
+        # Find midrule to skip header
+        midrule_idx = None
+        for i, line in enumerate(lines):
+            if r'\midrule' in line:
+                midrule_idx = i
+                break
+
+        if midrule_idx is not None:
+            rows = lines[midrule_idx+1:]
+        else:
+            rows = lines
+
+        # Filter out header and footer lines
+        rows = [r for r in rows if not (r.strip().startswith('Model') and 'F1' in r)]
+
+        first_row = True
+        for r in rows:
+            if r.strip() == "" or r.strip() == "\\bottomrule":
+                continue
+
+            method_col = method.replace('_', ' ').capitalize() if first_row else ""
+            new_row = f"{method_col} & {r.strip()}"
+            if not new_row.endswith('\\\\'):
+                new_row += r' \\'
+            all_rows.append(new_row)
+            first_row = False
+
+        # Add separator between methods (except last)
+        if method != method_order[-1] or method not in method_tables:
+            all_rows.append(r'                \midrule')
+
+    output_str += "\n".join(all_rows) + "\n"
+    output_str += "                \\bottomrule\n"
+    output_str += "            \\end{tabular}\n"
+    output_str += "    }\n"
+    output_str += f"    \\caption{{Method Comparison for {dataset.replace('_', '-')} at Epoch {epoch}}}\n"
+    output_str += "\\end{table}\n"
+    output_str += "\\end{document}\n"
+
+    with open(output_path, "w", encoding="utf-8") as out:
+        out.write(output_str)
+
+    logger.info(f"Method comparison saved at {output_path}")
+    logger.info(f"Method comparison saved at {output_path.with_suffix('.pdf')}")
+    _agg_reformat_file(output_path)
 
 
 def _parse_metric_val(val_str: str) -> Tuple[float, float]:
@@ -254,7 +367,7 @@ def write_latex_table(
         "\\begin{document}",
         "\\begin{table}[ht]",
         "\\centering",
-        "\\begin{tabular}{l" + "c" * len(METRICS) + "}",
+        "\\begin{tabular}{c" + "c" * len(METRICS) + "}",
         "\\toprule",
         "Model & " + " & ".join([m[0].replace('_', ' ').title() for m in METRICS]) + " \\\\",
         "\\midrule"
@@ -318,7 +431,7 @@ def _compile_latex(tex_path: Path):
     pdf_path = tex_path.with_suffix('.pdf')
     if pdf_path.exists():
         shutil.copy(pdf_path, FIGURES_DIR / pdf_path.name)
-        print(f"PDF Generated: {FIGURES_DIR / pdf_path.name}")
+        logger.info(f"PDF generated: {FIGURES_DIR / pdf_path.name}")
         # Clean up aux files quietly
         try:
             subprocess.run(
@@ -351,6 +464,7 @@ def plot_results(dataset: str, sampling_method: str = "", models: List[str] = DE
         inputs = natsorted(list(latest_dir.glob("*input*")))
         targets = natsorted(list(latest_dir.glob("*target*")))
         outputs = natsorted(list(latest_dir.glob("*final_output*")))
+        epoch = latest_dir.name.split("-")[-1]
 
         if not (images or inputs or targets or outputs):
             continue
@@ -361,7 +475,7 @@ def plot_results(dataset: str, sampling_method: str = "", models: List[str] = DE
         imgs = {
             "Image": images[index],
             "Input": inputs[index],
-            "Output": outputs[index],
+            f"Output({sampling_method})": outputs[index],
             "Target": targets[index],
         }
 
@@ -375,6 +489,7 @@ def plot_results(dataset: str, sampling_method: str = "", models: List[str] = DE
 
     n_models = len(model_images)
     fig, axes = plt.subplots(n_models, 4, figsize=(12, 3 * n_models), constrained_layout=True)
+    fig.suptitle(f"Results for {dataset.replace('_', '-')} / {sampling_method} / {epoch}", fontsize=16, fontweight='bold')
     if n_models == 1:
         axes = axes[None, :]
 
@@ -398,7 +513,7 @@ def plot_results(dataset: str, sampling_method: str = "", models: List[str] = DE
 
     out_name = f"sample_{sampling_method}_{dataset}.jpg" if sampling_method else f"sample_{dataset}.jpg"
     plt.savefig(FIGURES_DIR / out_name, dpi=150)
-    print(f"Plot saved: {FIGURES_DIR / out_name}")
+    logger.info(f"Plot saved: {FIGURES_DIR / out_name}")
     plt.close()
 
 
@@ -450,7 +565,7 @@ def plot_total_results(dataset: str, sampling_methods: List[str], models: List[s
 
     if not data_to_plot:
         data_to_plot.clear()  # 명확히 초기화
-        print(f"No images found for total plotting {dataset}")
+        logger.warning(f"No images found for total plotting {dataset}")
         return
 
     active_methods = [sm for sm in sampling_methods if sm in valid_methods]
@@ -494,7 +609,7 @@ def plot_total_results(dataset: str, sampling_methods: List[str], models: List[s
 
     out_name = f"total_sample_{dataset}.jpg"
     plt.savefig(FIGURES_DIR / out_name, dpi=150)
-    print(f"Total Plot saved: {FIGURES_DIR / out_name}")
+    logger.info(f"Total plot saved: {FIGURES_DIR / out_name}")
     plt.close()
 
 
@@ -521,7 +636,7 @@ def write_overall_latex_table(
             "\\begin{table}[ht]",
             "\\centering",
             "{\\footnotesize",
-            "\\begin{tabular}{" + ("l" if hide_method else "ll") + "c" * len(METRICS) + "}",
+            "\\begin{tabular}{" + ("c" if hide_method else "cc") + "c" * len(METRICS) + "}",
             "\\toprule",
             ("Model" if hide_method else "Method & Model") + " & " + " & ".join([m[0].replace('_', ' ').title() for m in METRICS]) + " " + "\\\\",
             "\\midrule"
@@ -544,7 +659,7 @@ def write_overall_latex_table(
 
                 if not hide_method:
                     if i == 0:
-                        row.append(f"{sm}")
+                        row.append(f"{sm.replace('_', ' ').capitalize()}")
                     else:
                         row.append("")
 
@@ -586,8 +701,9 @@ def write_overall_latex_table(
 
 
 ALL_DATASETS = ["DRIVE", "OCTA500_3M", "OCTA500_6M"]
-ALL_SAMPLING_METHODS = ["gaussian", "binomial", "poisson", "poisson_flow"]
+ALL_SAMPLING_METHODS = ["gaussian", "binomial", "poisson", "flow"]
 ALL_PREDICTION_TYPES = list(PREDICTION_PATTERNS.keys())
+ALL_STEPS = [10_000, 20_000, 50_000, 100_000]
 
 
 @click.command()
@@ -623,8 +739,13 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
 
     # epoch 리스트 처리 (기본값)
     if not epochs:
-        epochs = (100_000, 200_000, 500_000, 950_000)
+        epochs = ALL_STEPS
 
+    logger.info(f"Datasets: {datasets}")
+    logger.info(f"Models: {models}")
+    logger.info(f"Sampling Methods: {sampling_methods}")
+    logger.info(f"Epochs: {epochs}")
+    logger.info(f"Prediction Types: {prediction_types}")
     # if delete_results 옵션 처리
     if delete_results and RESULTS_DIR.exists():
         shutil.rmtree(RESULTS_DIR)
@@ -683,7 +804,7 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
         # Plots
         if not table_only:
             plot_tasks = list(unique_ds_sm)
-            for ds, sm in tqdm(plot_tasks, desc=f"Plots (epoch={epoch})", unit="cfg", leave=False):
+            for ds, sm in tqdm(plot_tasks, desc=f"Plots", unit="cfg", leave=False):
                 plot_results(ds, sm, models)
 
         if not plot_only:
@@ -693,7 +814,13 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
         if not table_only:
             for _ds in tqdm(ALL_DATASETS, desc=f"Overall Plots (epoch={epoch})", unit="dataset", leave=False):
                 plot_total_results(_ds, ALL_SAMPLING_METHODS, DEFAULT_MODELS)
+
     aggregate_tables_main()
+
+    # Compare methods at each epoch
+    for epoch in epochs:
+        for ds in datasets:
+            create_table_methods_at_epoch(epoch=epoch, dataset=ds)
 
 
 if __name__ == "__main__":

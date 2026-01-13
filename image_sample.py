@@ -27,7 +27,8 @@ NUM_CLASSES = 1
 def main():
     args = create_argparser().parse_args()
     base_output = "test-run" if args.test_run else "workdir"
-    output_dir = f"{base_output}/{args.diffusion_type}/{args.dataset}-{args.prior_model}"
+    experiment_name = f"{args.diffusion_type}-{args.ltype}-{'imgenc' if args.image_encoder else 'concat'}/{args.dataset}-{args.prior_model}"
+    output_dir = f"{base_output}/{experiment_name}"
     epoch = args.model_path.split('_')[-1].split('.')[0]
     result_dir = f"{output_dir}/results-{epoch}"
     os.makedirs(result_dir, exist_ok=True)
@@ -61,18 +62,28 @@ def main():
         model=args.prior_model,
         mode='test',
         deterministic=True,
+        refine=args.refine,
     )
 
     logger.log(f"sampling {len(dataloader.dataset)} images...")
     num_batches = math.ceil(len(dataloader.dataset) / args.batch_size)
     loader = tqdm(dataloader, desc="Sampling batches", unit="batch")
-    for i, (input, target, image) in enumerate(loader):
+    for i, data in enumerate(loader):
+        if args.refine:
+            input, target, image = data
+            model_kwargs = {
+                "img": image.to(dist_util.dev()),
+                "prior": input.to(dist_util.dev()),
+            }
+        else:
+            target, image = data
+            input = None
+            model_kwargs = {
+                "img": image.to(dist_util.dev()),
+            }
         loader.set_description(f"sampling batch {i+1}/{num_batches}")
         batch_size = image.shape[0]
-        model_kwargs = {
-            "img": image.to(dist_util.dev()),
-            "prior": input.to(dist_util.dev()),
-        }
+
         if args.class_cond:
             classes = torch.randint(
                 low=0, high=NUM_CLASSES, size=(batch_size,), device=dist_util.dev()
@@ -80,7 +91,7 @@ def main():
             model_kwargs["y"] = classes
         sample_fn = (
             diffusion.p_sample_loop if not args.use_ddim
-            else diffusion.sample if args.diffusion_type == "poisson_flow"
+            else diffusion.sample if args.diffusion_type == "flow"
             else diffusion.ddim_sample_loop
         )
 
@@ -89,11 +100,11 @@ def main():
                 sample, intermediates = patch_sample(
                     sample_fn=sample_fn,
                     model=model,
+                    model_kwargs=model_kwargs,
                     image=image.to(dist_util.dev()),
-                    prior=input.to(dist_util.dev()),
+                    prior=input.to(dist_util.dev()) if args.refine else None,
                     input_size=args.image_size,
                     patches_per_dim=args.patches_per_dim,
-                    model_kwargs=model_kwargs,
                 )
             else:
                 sample, intermediates = sample_fn(
@@ -109,12 +120,13 @@ def main():
         final_output = (sample > 0.5).float()
         final_output = final_output.to(torch.uint8)
         os.makedirs(f"{result_dir}/intermediates", exist_ok=True)
-        for j in range(input.shape[0]):
-            save_tensor_as_npy(f"{result_dir}/{i}_image_{j}.npy", image[j])
-            save_tensor_as_npy(f"{result_dir}/{i}_target_{j}.npy", target[j])
-            save_tensor_as_npy(f"{result_dir}/{i}_output_{j}.npy", sample[j])
-            save_tensor_as_npy(f"{result_dir}/{i}_final_output_{j}.npy", final_output[j])
-            save_tensor_as_npy(f"{result_dir}/{i}_input_{j}.npy", input[j])
+        for j in range(target.shape[0]):
+            idx = i * args.batch_size + j
+            save_tensor_as_npy(f"{result_dir}/{idx}_image.npy", image[j])
+            save_tensor_as_npy(f"{result_dir}/{idx}_target.npy", target[j])
+            save_tensor_as_npy(f"{result_dir}/{idx}_output.npy", sample[j])
+            save_tensor_as_npy(f"{result_dir}/{idx}_final_output.npy", final_output[j])
+            save_tensor_as_npy(f"{result_dir}/{idx}_input.npy", input[j]) if args.refine else None
 
             for step, out in enumerate(intermediates):
                 save_tensor_as_npy(
@@ -140,6 +152,9 @@ def create_argparser():
         prior_model='FRUnet',
         patches_per_dim=2,  # Number of patches per dimension for large images
         test_run=False,
+        ltype='mix',
+        image_encoder=False,
+        refine=False,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

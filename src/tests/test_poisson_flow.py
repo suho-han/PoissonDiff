@@ -6,8 +6,8 @@ import autorootcwd
 import matplotlib.pyplot as plt
 import torch
 
+from flow.flow import Flow
 from src.data.image_datasets import load_data
-from src.flow.poisson_flow import PoissonFlow
 from src.model.unet import UNetModel
 from src.utils.script_util import create_model
 
@@ -50,7 +50,7 @@ def main():
     model = model.to(DEVICE)
 
     # Create RectifiedFlow
-    flow = PoissonFlow(model, num_timesteps=STEPS)
+    flow = Flow(model, num_timesteps=STEPS)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     # Training loop

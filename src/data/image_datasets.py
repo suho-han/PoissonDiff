@@ -19,7 +19,7 @@ def _load_pil_image(path):
 
 def load_data(
     *, data_dir, batch_size, image_size, class_cond=False, deterministic=False,
-    model='FRUnet', mode='train'
+    model='FRUnet', mode='train', refine=False,
 ):
     """
     For a dataset, create a generator over (images, kwargs) pairs.
@@ -40,14 +40,24 @@ def load_data(
     if not data_dir:
         raise ValueError("unspecified data directory")
 
-    dataset = ImageDataset(
-        data_dir=data_dir,
-        resolution=image_size,
-        model=model,
-        mode=mode,
-        shard=MPI.COMM_WORLD.Get_rank(),
-        num_shards=MPI.COMM_WORLD.Get_size(),
-    )
+    if refine:
+        dataset = RefineImageDataset(
+            data_dir=data_dir,
+            resolution=image_size,
+            model=model,
+            mode=mode,
+            shard=MPI.COMM_WORLD.Get_rank(),
+            num_shards=MPI.COMM_WORLD.Get_size(),
+        )
+    else:
+        dataset = ImageDataset(
+            data_dir=data_dir,
+            resolution=image_size,
+            model=model,
+            mode=mode,
+            shard=MPI.COMM_WORLD.Get_rank(),
+            num_shards=MPI.COMM_WORLD.Get_size(),
+        )
     if deterministic:
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=False, num_workers=1, drop_last=False
@@ -63,7 +73,7 @@ def load_data(
     return loader
 
 
-class ImageDataset(Dataset):
+class RefineImageDataset(Dataset):
     def __init__(self, data_dir, resolution, model, mode, shard=0, num_shards=1):
         super().__init__()
         self.resolution = resolution
@@ -136,6 +146,72 @@ class ImageDataset(Dataset):
         arr_image = arr_image.astype(np.float32) / 255.0
 
         return arr_input, arr_target, arr_image  # input, target, image
+
+
+class ImageDataset(Dataset):
+    def __init__(self, data_dir, resolution, model, mode, shard=0, num_shards=1):
+        super().__init__()
+        self.resolution = resolution
+        self.mode = mode
+
+        image_dir = bf.join(data_dir, mode, "images")
+        label_dir = bf.join(data_dir, mode, "labels")
+
+        image_files = natsorted(os.listdir(image_dir))
+
+        self.local_paths = []
+        for img_file in image_files:
+            self.local_paths.append({
+                "image": bf.join(image_dir, img_file),
+                "target": bf.join(label_dir, img_file),
+            })
+
+        self.local_paths = self.local_paths[shard::num_shards]
+
+    def __len__(self):
+        return len(self.local_paths)
+
+    def __getitem__(self, idx):
+        paths = self.local_paths[idx]
+
+        pil_image = _load_pil_image(paths["image"]).convert("L")
+        pil_target = _load_pil_image(paths["target"]).convert("L")
+
+        # train transforms
+        if self.mode == 'train':
+            crop_size = (self.resolution, self.resolution)
+            i, j, h, w = transforms.RandomCrop.get_params(pil_image, crop_size)
+            pil_image = transforms.functional.crop(pil_image, i, j, h, w)
+            pil_target = transforms.functional.crop(pil_target, i, j, h, w)
+            # get random parameters
+            # limit rotations to multiples of 90 degrees to avoid interpolation artifacts
+            angle = random.choice([0, 90, 180, 270])
+            do_vflip = random.random() > 0.5
+            do_hflip = random.random() > 0.5
+
+            def apply_common_transforms(img):
+                img = transforms.functional.rotate(img, angle, interpolation=transforms.InterpolationMode.BICUBIC)
+                if do_vflip:
+                    img = transforms.functional.vflip(img)
+                if do_hflip:
+                    img = transforms.functional.hflip(img)
+                return img
+
+            pil_image = apply_common_transforms(pil_image)
+            pil_target = apply_common_transforms(pil_target)
+
+        arr_image = np.array(pil_image)
+        arr_target = np.array(pil_target)
+
+        arr_image = np.expand_dims(arr_image, axis=0)
+        arr_target = np.expand_dims(arr_target, axis=0)
+
+        # Normalize to float32 in range [0, 1]
+        arr_image = arr_image.astype(np.float32) / 255.0
+        arr_target = arr_target.astype(np.float32) / 255.0 > 0.5
+        arr_target = arr_target.astype(np.float32)
+
+        return arr_target, arr_image  # target, image
 
 
 if __name__ == '__main__':

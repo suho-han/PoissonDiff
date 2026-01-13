@@ -5,12 +5,10 @@ import autorootcwd
 import blobfile as bf
 import torch as th
 
-from src.diffusion import binomial_diffusion as bd
-from src.diffusion import gaussian_diffusion as gd
-from src.diffusion import prior_binomial_diffusion as pbd
-from src.diffusion import prior_poisson_diffusion as ppd
-from src.diffusion.respace import GaussianSpacedDiffusion, PoissonSpacedDiffusion, SpacedDiffusion, space_timesteps
-from src.flow.poisson_flow import PoissonFlow
+from src.diffusion.base import LossType, ModelMeanType, ModelVarType, get_named_beta_schedule
+from src.diffusion.respace import BinomialSpacedDiffusion, GaussianSpacedDiffusion, PoissonSpacedDiffusion, PriorBinomialSpacedDiffusion, PriorPoissonSpacedDiffusion, space_timesteps
+from src.flow.flow import Flow
+from src.model import unet_imgenc
 from src.model.unet import SegmentationModel
 
 
@@ -38,7 +36,8 @@ def model_and_diffusion_defaults():
         diffusion_type="priorbinomial",
         # IDDPM params
         class_cond=False,
-
+        image_encoder=False,
+        refine=False,
     )
 
 
@@ -60,8 +59,10 @@ def create_model_and_diffusion(
     use_checkpoint,
     use_scale_shift_norm,
     diffusion_type,
+    image_encoder,
     # IDDPM params
     class_cond=False,
+    **kwargs,
 ):
     model = create_model(
         image_size,
@@ -74,10 +75,20 @@ def create_model_and_diffusion(
         num_heads_upsample=num_heads_upsample,
         use_scale_shift_norm=use_scale_shift_norm,
         dropout=dropout,
+        image_encoder=image_encoder,
     )
 
-    if diffusion_type == "priorbinomial" or diffusion_type == "binomial" or diffusion_type == "bernoulli":
+    if diffusion_type == "priorbinomial":
         diffusion = create_priorbinomial_diffusion(
+            steps=diffusion_steps,
+            noise_schedule=noise_schedule,
+            ltype=ltype,
+            mean_type=mean_type,
+            rescale_timesteps=rescale_timesteps,
+            timestep_respacing=timestep_respacing,
+        )
+    elif diffusion_type == "binomial" or diffusion_type == "bernoulli":
+        diffusion = create_binomial_diffusion(
             steps=diffusion_steps,
             noise_schedule=noise_schedule,
             ltype=ltype,
@@ -93,7 +104,7 @@ def create_model_and_diffusion(
             rescale_timesteps=rescale_timesteps,
             timestep_respacing=timestep_respacing,
         )
-    elif diffusion_type == "poisson":
+    elif diffusion_type == "priorpoisson":
         diffusion = create_priorpoisson_diffusion(
             steps=diffusion_steps,
             noise_schedule=noise_schedule,
@@ -102,8 +113,18 @@ def create_model_and_diffusion(
             rescale_timesteps=rescale_timesteps,
             timestep_respacing=timestep_respacing,
         )
-    elif diffusion_type == "poisson_flow":
-        diffusion = PoissonFlow(
+    elif diffusion_type == "poisson":
+        diffusion = create_poisson_diffusion(
+            steps=diffusion_steps,
+            noise_schedule=noise_schedule,
+            ltype=ltype,
+            mean_type=mean_type,
+            rescale_timesteps=rescale_timesteps,
+            timestep_respacing=timestep_respacing,
+        )
+
+    elif diffusion_type == "flow":
+        diffusion = Flow(
             num_timesteps=100,
             t_min=0.0,
             t_max=1.0,
@@ -125,6 +146,7 @@ def create_model(
     num_heads_upsample,
     use_scale_shift_norm,
     dropout,
+    image_encoder,
 ):
     if image_size == 512:
         channel_mult = (1, 1, 2, 2, 4, 4)
@@ -145,21 +167,38 @@ def create_model(
 
     out_channels = in_channels = 1
 
-    model = SegmentationModel(
-        in_channels=in_channels,
-        img_channels=img_channels,
-        model_channels=num_channels,
-        out_channels=out_channels,
-        num_res_blocks=num_res_blocks,
-        attention_resolutions=tuple(attention_ds),
-        dropout=dropout,
-        channel_mult=channel_mult,
-        num_classes=None,
-        use_checkpoint=use_checkpoint,
-        num_heads=num_heads,
-        num_heads_upsample=num_heads_upsample,
-        use_scale_shift_norm=use_scale_shift_norm,
-    )
+    if image_encoder:
+        model = unet_imgenc.SegmentationModel(
+            in_channels=in_channels,
+            img_channels=img_channels,
+            model_channels=num_channels,
+            out_channels=out_channels,
+            num_res_blocks=num_res_blocks,
+            attention_resolutions=tuple(attention_ds),
+            dropout=dropout,
+            channel_mult=channel_mult,
+            num_classes=None,
+            use_checkpoint=use_checkpoint,
+            num_heads=num_heads,
+            num_heads_upsample=num_heads_upsample,
+            use_scale_shift_norm=use_scale_shift_norm,
+        )
+    else:
+        model = SegmentationModel(
+            in_channels=in_channels,
+            img_channels=img_channels,
+            model_channels=num_channels,
+            out_channels=out_channels,
+            num_res_blocks=num_res_blocks,
+            attention_resolutions=tuple(attention_ds),
+            dropout=dropout,
+            channel_mult=channel_mult,
+            num_classes=None,
+            use_checkpoint=use_checkpoint,
+            num_heads=num_heads,
+            num_heads_upsample=num_heads_upsample,
+            use_scale_shift_norm=use_scale_shift_norm,
+        )
 
     return model
 
@@ -171,22 +210,65 @@ def create_gaussian_diffusion(
     rescale_timesteps=False,
     timestep_respacing="",
 ):
-    betas = gd.get_named_beta_schedule(noise_schedule, steps)
+    betas = get_named_beta_schedule(noise_schedule, steps)
     if not timestep_respacing:
         timestep_respacing = [steps]
     if mean_type == "ystart":
-        model_mean = gd.ModelMeanType.START_Y
+        model_mean = ModelMeanType.START_Y
     elif mean_type == "epsilon":
-        model_mean = gd.ModelMeanType.EPSILON
+        model_mean = ModelMeanType.EPSILON
     elif mean_type == "previous":
-        model_mean = gd.ModelMeanType.PREVIOUS_Y
+        model_mean = ModelMeanType.PREVIOUS_Y
     else:
         raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
     return GaussianSpacedDiffusion(
         use_timesteps=space_timesteps(steps, timestep_respacing),
         betas=betas,
         model_mean_type=model_mean,
-        loss_type=gd.LossType.MSE,
+        model_var_type=ModelVarType.FIXED_LARGE,
+        loss_type=LossType.MSE,
+        rescale_timesteps=rescale_timesteps,
+    )
+
+
+def create_binomial_diffusion(
+    *,
+    steps=1000,
+    noise_schedule="linear",
+    ltype="bce",
+    mean_type="ystart",
+    rescale_timesteps=False,
+    timestep_respacing="",
+):
+    betas = get_named_beta_schedule(noise_schedule, steps)
+    if ltype == "rescale_kl":
+        loss_type = LossType.RESCALED_KL
+    elif ltype == "kl":
+        loss_type = LossType.KL
+    elif ltype == "bce":
+        loss_type = LossType.BCE
+    elif ltype == "mix":
+        loss_type = LossType.MIX
+    elif ltype == "mse":
+        loss_type = LossType.MSE
+    else:
+        raise NotImplementedError(f"unknown LossType: {ltype}")
+    if not timestep_respacing:
+        timestep_respacing = [steps]
+    if mean_type == "ystart":
+        model_mean = ModelMeanType.START_Y
+    elif mean_type == "epsilon":
+        model_mean = ModelMeanType.EPSILON
+    elif mean_type == "previous":
+        model_mean = ModelMeanType.PREVIOUS_Y
+    else:
+        raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
+
+    return BinomialSpacedDiffusion(
+        use_timesteps=space_timesteps(steps, timestep_respacing),
+        betas=betas,
+        model_mean_type=model_mean,
+        loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
     )
 
@@ -199,29 +281,71 @@ def create_priorbinomial_diffusion(
     rescale_timesteps=False,
     timestep_respacing="",
 ):
-    betas = pbd.get_named_beta_schedule(noise_schedule, steps)
+    betas = get_named_beta_schedule(noise_schedule, steps)
     if ltype == "rescale_kl":
-        loss_type = pbd.LossType.RESCALED_KL
+        loss_type = LossType.RESCALED_KL
     elif ltype == "kl":
-        loss_type = pbd.LossType.KL
+        loss_type = LossType.KL
     elif ltype == "bce":
-        loss_type = pbd.LossType.BCE
+        loss_type = LossType.BCE
     elif ltype == "mix":
-        loss_type = pbd.LossType.MIX
+        loss_type = LossType.MIX
     else:
         raise NotImplementedError(f"unknown LossType: {ltype}")
     if not timestep_respacing:
         timestep_respacing = [steps]
     if mean_type == "ystart":
-        model_mean = pbd.ModelMeanType.START_Y
+        model_mean = ModelMeanType.START_Y
     elif mean_type == "epsilon":
-        model_mean = pbd.ModelMeanType.EPSILON
+        model_mean = ModelMeanType.EPSILON
     elif mean_type == "previous":
-        model_mean = pbd.ModelMeanType.PREVIOUS_Y
+        model_mean = ModelMeanType.PREVIOUS_Y
     else:
         raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
 
-    return SpacedDiffusion(
+    return PriorBinomialSpacedDiffusion(
+        use_timesteps=space_timesteps(steps, timestep_respacing),
+        betas=betas,
+        model_mean_type=model_mean,
+        loss_type=loss_type,
+        rescale_timesteps=rescale_timesteps,
+    )
+
+
+def create_poisson_diffusion(
+    *,
+    steps=1000,
+    noise_schedule="linear",
+    ltype="bce",
+    mean_type="ystart",
+    rescale_timesteps=False,
+    timestep_respacing="",
+):
+    betas = get_named_beta_schedule(noise_schedule, steps)
+    if ltype == "rescale_kl":
+        loss_type = LossType.RESCALED_KL
+    elif ltype == "kl":
+        loss_type = LossType.KL
+    elif ltype == "bce":
+        loss_type = LossType.BCE
+    elif ltype == "mix":
+        loss_type = LossType.MIX
+    elif ltype == "mse":
+        loss_type = LossType.MSE
+    else:
+        raise NotImplementedError(f"unknown LossType: {ltype}")
+    if not timestep_respacing:
+        timestep_respacing = [steps]
+    if mean_type == "ystart":
+        model_mean = ModelMeanType.START_Y
+    elif mean_type == "epsilon":
+        model_mean = ModelMeanType.EPSILON
+    elif mean_type == "previous":
+        model_mean = ModelMeanType.PREVIOUS_Y
+    else:
+        raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
+
+    return PoissonSpacedDiffusion(
         use_timesteps=space_timesteps(steps, timestep_respacing),
         betas=betas,
         model_mean_type=model_mean,
@@ -238,29 +362,29 @@ def create_priorpoisson_diffusion(
     rescale_timesteps=False,
     timestep_respacing="",
 ):
-    betas = ppd.get_named_beta_schedule(noise_schedule, steps)
+    betas = get_named_beta_schedule(noise_schedule, steps)
     if ltype == "rescale_kl":
-        loss_type = ppd.LossType.RESCALED_KL
+        loss_type = LossType.RESCALED_KL
     elif ltype == "kl":
-        loss_type = ppd.LossType.KL
+        loss_type = LossType.KL
     elif ltype == "bce":
-        loss_type = ppd.LossType.BCE
+        loss_type = LossType.BCE
     elif ltype == "mix":
-        loss_type = ppd.LossType.MIX
+        loss_type = LossType.MIX
     else:
         raise NotImplementedError(f"unknown LossType: {ltype}")
     if not timestep_respacing:
         timestep_respacing = [steps]
     if mean_type == "ystart":
-        model_mean = ppd.ModelMeanType.START_Y
+        model_mean = ModelMeanType.START_Y
     elif mean_type == "epsilon":
-        model_mean = ppd.ModelMeanType.EPSILON
+        model_mean = ModelMeanType.EPSILON
     elif mean_type == "previous":
-        model_mean = ppd.ModelMeanType.PREVIOUS_Y
+        model_mean = ModelMeanType.PREVIOUS_Y
     else:
         raise NotImplementedError(f"unknown ModelMeanType: {mean_type}")
 
-    return PoissonSpacedDiffusion(
+    return PriorPoissonSpacedDiffusion(
         use_timesteps=space_timesteps(steps, timestep_respacing),
         betas=betas,
         model_mean_type=model_mean,

@@ -1,7 +1,9 @@
 import numpy as np
 import torch as th
 
+from src.diffusion.binomial_diffusion import BinomialDiffusion
 from src.diffusion.gaussian_diffusion import GaussianDiffusion
+from src.diffusion.poisson_diffusion import PoissonDiffusion
 from src.diffusion.prior_binomial_diffusion import PriorBinomialDiffusion
 from src.diffusion.prior_poisson_diffusion import PriorPoissonDiffusion
 
@@ -118,7 +120,11 @@ class _SpacedDiffusionMixin:
         return t
 
 
-class SpacedDiffusion(_SpacedDiffusionMixin, PriorBinomialDiffusion):
+class BinomialSpacedDiffusion(_SpacedDiffusionMixin, BinomialDiffusion):
+    """Spaced diffusion for binomial-style processes."""
+
+
+class PriorBinomialSpacedDiffusion(_SpacedDiffusionMixin, PriorBinomialDiffusion):
     """Spaced diffusion for binomial-style processes."""
 
 
@@ -126,7 +132,11 @@ class GaussianSpacedDiffusion(_SpacedDiffusionMixin, GaussianDiffusion):
     """Spaced diffusion for gaussian processes."""
 
 
-class PoissonSpacedDiffusion(_SpacedDiffusionMixin, PriorPoissonDiffusion):
+class PoissonSpacedDiffusion(_SpacedDiffusionMixin, PoissonDiffusion):
+    """Spaced diffusion for poisson-style processes."""
+
+
+class PriorPoissonSpacedDiffusion(_SpacedDiffusionMixin, PriorPoissonDiffusion):
     """Spaced diffusion for poisson-style processes."""
 
 

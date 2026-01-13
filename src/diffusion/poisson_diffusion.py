@@ -1,21 +1,19 @@
 '''
-BerDiff: Conditional Bernoulli Diffusion Model  for Medical Image Segmentation
-Tao Chen, Chenhui Wang, Hongming Shan
-MICCAI 2023
+PDDM: Poisson-Distribution Diffusion Model with  Multi-Step Weighted Fusion for Medical Image  Segmentation
+Xingyu Chen, Junying Chen
+IJCCN 2024
 '''
-import enum
-import math
 
 import numpy as np
 import torch
-from torch.distributions.binomial import Binomial
+from torch.distributions.poisson import Poisson
 
 from src.diffusion.base import LossType, ModelMeanType
-from src.loss.losses import binomial_kl, binomial_log_likelihood
+from src.loss.losses import binomial_kl, binomial_log_likelihood, poisson_kl, poisson_log_likelihood
 from src.model.basic_module import mean_flat
 
 
-class BinomialDiffusion:
+class PoissonDiffusion:
     """
     Utilities for training and sampling diffusion models.
 
@@ -54,9 +52,9 @@ class BinomialDiffusion:
         """
         Get the distribution q(x_t | x_0).
 
-        :param x_start: the [N x C x ...] tensor of noiseless inputs.
+        :param x_start: the initial data batch.
         :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
-        :return: Binomial distribution parameters, of x_start's shape.
+        :return: Poisson distribution parameters, of x_start's shape.
         """
         mean = _extract_into_tensor(self.alphas_cumprod, t, x_start.shape) * x_start \
             + (1 - _extract_into_tensor(self.alphas_cumprod, t, x_start.shape)) / 2
@@ -66,14 +64,15 @@ class BinomialDiffusion:
     def q_sample(self, x_start, t):
         """
         Diffuse the data for a given number of diffusion steps.
-        In other words, sample from q(x_t)=B(x_T;1/2 x 1).
+        In other words, sample from q(x_t | x_0).
 
         :param x_start: the initial data batch.
         :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
         :return: A noisy version of x_start.
         """
+
         mean = self.q_mean(x_start, t)
-        return Binomial(1, mean).sample()
+        return Poisson(mean).sample()
 
     def q_posterior_mean(self, x_start, x_t, t):
         """
@@ -190,7 +189,7 @@ class BinomialDiffusion:
             model_kwargs=model_kwargs,
         )
 
-        sample = Binomial(1, out["mean"]).sample()
+        sample = Poisson(out["mean"]).sample()
         if t[0] != 0:
             return {"sample": sample, "pred_xstart": out["pred_xstart"]}
         else:
@@ -260,7 +259,7 @@ class BinomialDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = Binomial(1, torch.ones(*shape)/2).sample().to(device)
+            img = Poisson(torch.ones(*shape)/2).sample().to(device)
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
@@ -307,8 +306,8 @@ class BinomialDiffusion:
             alpha_bar_t = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
             sigma = (1 - alpha_bar_t_1) / (1 - alpha_bar_t)
             mean = sigma * x + (alpha_bar_t_1 - sigma * alpha_bar_t) * out["pred_xstart"]
-            # sample = Binomial(1, th.clip(mean, min=0, max=1)).sample()
-            sample = Binomial(1, mean).sample()
+            # sample = Binomial(1, torch.clip(mean, min=0, max=1)).sample()
+            sample = Poisson(mean).sample()
             return {"sample": sample, "pred_xstart": out["pred_xstart"]}
         else:
             return {"sample": out["mean"], "pred_xstart": out["pred_xstart"]}
@@ -322,6 +321,7 @@ class BinomialDiffusion:
         model_kwargs=None,
         device=None,
         progress=True,
+        return_intermediates=False,
     ):
         """
         Generate samples from the model using DDIM.
@@ -329,7 +329,8 @@ class BinomialDiffusion:
         Same usage as p_sample_loop().
         """
         final = None
-        for sample in self.ddim_sample_loop_progressive(
+        intermediates = [] if return_intermediates else None
+        for i, sample in enumerate(self.ddim_sample_loop_progressive(
             model,
             shape,
             noise=noise,
@@ -337,8 +338,12 @@ class BinomialDiffusion:
             model_kwargs=model_kwargs,
             device=device,
             progress=progress,
-        ):
+        )):
             final = sample
+            if intermediates is not None and i % 50 == 0:
+                intermediates.append(sample["sample"])
+        if return_intermediates:
+            return final["sample"], intermediates
         return final["sample"]
 
     def ddim_sample_loop_progressive(
@@ -363,7 +368,8 @@ class BinomialDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = Binomial(1, torch.ones(*shape)/2).sample().to(device)
+            # img = Binomial(1, torch.ones(*shape)/2).sample().to(device)
+            img = Poisson(torch.ones(*shape)/2).sample().to(device)
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
@@ -402,11 +408,11 @@ class BinomialDiffusion:
         out = self.p_mean(
             model, x_t, t, model_kwargs=model_kwargs
         )
-        kl = binomial_kl(true_mean, out["mean"])
+        kl = poisson_kl(true_mean, out["mean"])
 
         kl = mean_flat(kl) / np.log(2.0)
 
-        decoder_nll = -binomial_log_likelihood(x_start, means=out["mean"])
+        decoder_nll = -poisson_log_likelihood(x_start, means=out["mean"])
         assert decoder_nll.shape == x_start.shape
         decoder_nll = mean_flat(decoder_nll) / np.log(2.0)
 
@@ -415,23 +421,23 @@ class BinomialDiffusion:
         output = torch.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def _prior_bpd(self, x_start):
-        """
-        Get the prior KL term for the variational lower-bound, measured in
-        bits-per-dim.
+    # def _prior_bpd(self, x_start):
+    #     """
+    #     Get the prior KL term for the variational lower-bound, measured in
+    #     bits-per-dim.
 
-        This term can't be optimized, as it only depends on the encoder.
+    #     This term can't be optimized, as it only depends on the encoder.
 
-        :param x_start: the [N x C x ...] tensor of inputs.
-        :return: a batch of [N] KL values (in bits), one per batch element.
-        """
-        batch_size = x_start.shape[0]
-        t = torch.tensor([self.num_timesteps - 1] * batch_size, device=x_start.device)
-        qt_mean = self.q_mean(x_start, t)
-        kl_prior = binomial_kl(
-            mean1=qt_mean, mean2=0.0
-        )
-        return mean_flat(kl_prior) / np.log(2.0)
+    #     :param x_start: the [N x C x ...] tensor of inputs.
+    #     :return: a batch of [N] KL values (in bits), one per batch element.
+    #     """
+    #     batch_size = x_start.shape[0]
+    #     t = torch.tensor([self.num_timesteps - 1] * batch_size, device=x_start.device)
+    #     qt_mean = self.q_mean(x_start, t)
+    #     kl_prior = binomial_kl(
+    #         mean1=qt_mean, mean2=0.0
+    #     )
+    #     return mean_flat(kl_prior) / np.log(2.0)
 
     def training_losses(self, model, x_start, t, model_kwargs=None):
         """

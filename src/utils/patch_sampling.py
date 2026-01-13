@@ -45,6 +45,8 @@ def patch_sample(
         overlap_val = overlap if overlap is not None else 0
         stride_h = stride_w = max(1, input_size - overlap_val)
 
+    print(f"Using stride: ({stride_h}, {stride_w})")
+
     # Calculate number of patches needed per dimension
     num_patches_h = math.ceil((H - input_size) / stride_h) + 1 if H > input_size else 1
     num_patches_w = math.ceil((W - input_size) / stride_w) + 1 if W > input_size else 1
@@ -66,13 +68,19 @@ def patch_sample(
 
             # Extract patches
             image_patch = image[:, :, start_h:end_h, start_w:end_w]
-            prior_patch = prior[:, :, start_h:end_h, start_w:end_w]
 
-            # Update model_kwargs for this patch
-            patch_kwargs = {
-                "img": image_patch,
-                "prior": prior_patch
-            }
+            if prior is not None:
+                prior_patch = prior[:, :, start_h:end_h, start_w:end_w]
+
+                # Update model_kwargs for this patch
+                patch_kwargs = {
+                    "img": image_patch,
+                    "prior": prior_patch
+                }
+            else:
+                patch_kwargs = {
+                    "img": image_patch,
+                }
             if "y" in model_kwargs:
                 patch_kwargs["y"] = model_kwargs["y"]
 

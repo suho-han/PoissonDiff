@@ -128,6 +128,7 @@ def save_tables(history: List[Dict[str, Any]], output_path: Path) -> None:
     ]
     rows_details: List[List[Any]] = []
     for idx, item in enumerate(history, start=1):
+        resume_ckpt = item.get("resume_checkpoint") or "-"
         rows_details.append([
             idx,
             safe_ts(item),
@@ -144,7 +145,7 @@ def save_tables(history: List[Dict[str, Any]], output_path: Path) -> None:
             item.get("image_size", "-"),
             item.get("schedule_sampler", "-"),
             item.get("gpu", "-"),
-            item.get("resume_checkpoint", "-"),
+            resume_ckpt,
         ])
 
     md = io.StringIO()

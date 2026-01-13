@@ -204,6 +204,72 @@ class TensorBoardOutputFormat(KVWriter):
             self.writer = None
 
 
+class WandbOutputFormat(KVWriter):
+    """
+    Dumps key/value pairs into Weights & Biases.
+    """
+
+    def __init__(self, dir, log_suffix="", experiment_name=None):
+        try:
+            import wandb
+        except ImportError:
+            warnings.warn("wandb not available, skipping Wandb logging")
+            self.wandb = None
+            return
+        self.wandb = wandb
+        wandb.init(
+            dir=dir,
+            name=(experiment_name + log_suffix) if experiment_name else log_suffix,
+            project="Diffusion Segmentation",
+        )
+        self.step = 1
+
+    def writekvs(self, kvs):
+        if self.wandb is None:
+            return
+        self.wandb.log(kvs, step=self.step)
+        self.step += 1
+
+    def add_image(self, tag, images, step=None, max_images=4):
+        if self.wandb is None or images is None:
+            return
+        try:
+            import torch
+        except ImportError:
+            warnings.warn("torch is required for image logging but was not found")
+            return
+        if not isinstance(images, torch.Tensor):
+            images = torch.as_tensor(images)
+        if images.ndim == 3:
+            images = images.unsqueeze(0)
+        if images.ndim != 4:
+            warnings.warn("log_image expects a 3D or 4D tensor (CHW or NCHW)")
+            return
+        images = images.detach().cpu().float()
+        images = images[:max_images]
+        if images.shape[1] not in (1, 3):
+            images = images.mean(dim=1, keepdim=True)
+        min_vals = images.amin(dim=(1, 2, 3), keepdim=True)
+        max_vals = images.amax(dim=(1, 2, 3), keepdim=True)
+        scales = (max_vals - min_vals).clamp(min=1e-8)
+        norm_images = (images - min_vals) / scales
+
+        # Convert to numpy and transpose to HWC format for wandb
+        wandb_images = []
+        for img in norm_images:
+            # img shape: (C, H, W) -> (H, W, C)
+            img_np = img.permute(1, 2, 0).numpy()
+            wandb_images.append(self.wandb.Image(img_np, caption=tag))
+
+        step_value = self.step if step is None else step
+        self.wandb.log({tag: wandb_images}, step=step_value)
+
+    def close(self):
+        if self.wandb:
+            self.wandb.finish()
+            self.wandb = None
+
+
 def make_output_format(format, ev_dir, log_suffix="", experiment_name=None):
     os.makedirs(ev_dir, exist_ok=True)
     if format == "stdout":
@@ -216,6 +282,8 @@ def make_output_format(format, ev_dir, log_suffix="", experiment_name=None):
         return CSVOutputFormat(osp.join(ev_dir, "progress%s.csv" % log_suffix))
     elif format == "tensorboard":
         return TensorBoardOutputFormat(osp.join(ev_dir, "tb%s" % log_suffix), experiment_name)
+    elif format == "wandb":
+        return WandbOutputFormat(ev_dir, log_suffix, experiment_name)
     else:
         raise ValueError("Unknown format specified: %s" % (format,))
 

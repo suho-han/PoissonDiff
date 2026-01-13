@@ -13,9 +13,6 @@ test-run/
 alert.py
 train.sh
 test.sh
-# .python-version
-# pyproject.toml
-# uv.lock
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

@@ -9,7 +9,7 @@ https://arxiv.org/abs/2209.03003
 '''
 
 
-class PoissonFlow(nn.Module):
+class Flow(nn.Module):
     def __init__(self, num_timesteps=100, t_min=0.0, t_max=1.0):
         super().__init__()
         self.num_timesteps = num_timesteps
@@ -47,7 +47,7 @@ class PoissonFlow(nn.Module):
         return {"loss": loss.flatten(1).mean(1)}, samples
 
     @torch.no_grad()
-    def sample(self, model, model_kwargs, *args, **kwargs):
+    def sample(self, model, shape, model_kwargs, *args, **kwargs):
         """
         Euler Method ODE Solver
         dX_t = v(X_t, t) dt

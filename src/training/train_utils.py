@@ -43,6 +43,7 @@ class TrainLoop:
         schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_steps=0,
+        refine=False,
     ):
 
         self.model = model
@@ -115,6 +116,7 @@ class TrainLoop:
                 )
             self.use_ddp = False
             self.ddp_model = self.model
+        self.refine = refine
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint(self.checkpoint_dir) or self.resume_checkpoint
@@ -174,12 +176,20 @@ class TrainLoop:
                 # step_limit을 넘어가면 학습 멈추기
                 return
             try:
-                input, target, image = next(data_iter)
+                if self.refine:
+                    input, target, image = next(data_iter)
+                else:
+                    target, image = next(data_iter)
+                    input = None
             except StopIteration:
                 # StopIteration is thrown if dataset ends
                 # reinitialize data loader
                 data_iter = iter(self.dataloader)
-                input, target, image = next(data_iter)
+                if self.refine:
+                    input, target, image = next(data_iter)
+                else:
+                    target, image = next(data_iter)
+                    input = None
             self.run_step(input, target, image)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
@@ -201,10 +211,16 @@ class TrainLoop:
 
     def forward_backward(self, input, target, image):
         zero_grad(self.model_params)
-        for i in range(0, input.shape[0], self.microbatch):
-            micro = {"img": image[i: i + self.microbatch].to(dist_util.dev()),
-                     "prior": input[i: i + self.microbatch].to(dist_util.dev())
-                     }
+        for i in range(0, target.shape[0], self.microbatch):
+            if input is not None:
+                micro = {
+                    "img": image[i: i + self.microbatch].to(dist_util.dev()),
+                    "prior": input[i: i + self.microbatch].to(dist_util.dev())
+                }
+            else:
+                micro = {
+                    "img": image[i: i + self.microbatch].to(dist_util.dev()),
+                }
             micro_cond = target[i: i + self.microbatch].to(dist_util.dev())
             last_batch = (i + self.microbatch) >= target.shape[0]
             t, weights = self.schedule_sampler.sample(micro_cond.shape[0], dist_util.dev())
