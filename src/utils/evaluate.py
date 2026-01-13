@@ -31,7 +31,6 @@ DEFAULT_MODELS = ["Unet", "SwinUNETR", "CSNet", "FRUnet"]
 
 PREDICTION_PATTERNS = {
     "final": "final_output",
-    "input": "input",
 }
 FIGURES_DIR = Path("figures")
 WORKDIR_DIR = Path("workdir")
@@ -42,7 +41,10 @@ TEX_DIR = RESULTS_DIR / "tex"
 
 def _get_workdir_path(dataset: str, model: str, sampling_method: str = "") -> Path:
     """Create the expected workdir path for a given config."""
-    dir_name = f"{sampling_method}/{dataset}-{model}"
+    if sampling_method:
+        dir_name = f"{sampling_method}-mse-concat/{dataset}-{model}"
+    else:
+        dir_name = f"{dataset}-{model}"
     return WORKDIR_DIR / dir_name
 
 

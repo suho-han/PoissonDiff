@@ -68,7 +68,7 @@ wheels = [
 ]
 
 [[package]]
-name = "poissondiff"
+name = "poisson-diffusion-segmentation"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

@@ -79,23 +79,8 @@ def aggregate_tables_main():
     files = []
     for method in ALL_SAMPLING_METHODS:
         pattern = str(_AGG_RESULTS_DIR / f"sample_{method}_OCTA500_6M_*.tex")
-        method_files = [f for f in sorted(glob(pattern)) if "input" not in os.path.basename(f)]
+        method_files = sorted(glob(pattern))
         files.extend(method_files)
-    input_tables = {}
-    for method in ALL_SAMPLING_METHODS:
-        input_pattern = str(_AGG_RESULTS_DIR / f"sample_{method}_OCTA500_6M_input_*.tex")
-        input_files = sorted(glob(input_pattern))
-        if input_files:
-            def extract_epoch_from_input(fname):
-                base = os.path.basename(fname)
-                try:
-                    return int(base.split("_")[-1].replace(".tex", ""))
-                except Exception:
-                    return 0
-            input_file = max(input_files, key=extract_epoch_from_input)
-            table_content = _agg_extract_table_content(input_file)
-            if table_content:
-                input_tables[method] = table_content
 
     method_tables = _agg_defaultdict(list)
     for f in files:
@@ -120,35 +105,6 @@ def aggregate_tables_main():
             output_str += _AGG_TABLE_HEADER
             all_rows = []
             all_rows.append(F"% Aggregated results for {method.capitalize()}\n")
-            if method in input_tables:
-                lines = input_tables[method].splitlines()
-                header_idx = None
-                for i, line in enumerate(lines):
-                    if line.strip().startswith('Model') and 'F1' in line:
-                        header_idx = i
-                        break
-                midrule_idx = None
-                for i, line in enumerate(lines):
-                    if r'\midrule' in line:
-                        midrule_idx = i
-                        break
-                if midrule_idx is not None:
-                    rows = lines[midrule_idx+1:]
-                else:
-                    rows = lines
-                rows = [r for r in rows if not (r.strip().startswith('Model') and 'F1' in r)]
-                first_row = True
-                for r in rows:
-                    if r.strip() == "" or r.strip() == "\\bottomrule":
-                        continue
-                    epoch_col = "Prev" if first_row else ""
-                    new_row = f"{epoch_col} & {r.strip()}"
-                    if not new_row.endswith('\\\\'):
-                        new_row += r' \\\\'
-                    all_rows.append(new_row)
-                    first_row = False
-                if method_tables[method]:
-                    all_rows.append(r'                \midrule')
 
             epoch_tables = natsorted(method_tables[method], key=lambda x: int(x[0]))
             for idx, (epoch, table) in enumerate(epoch_tables):
@@ -202,28 +158,6 @@ def create_table_methods_at_epoch(epoch: int, dataset: str = "OCTA500_6M"):
     # Collect tables for each method
     method_tables = {}
 
-    # Get "Prev" (input) table
-    for method in ALL_SAMPLING_METHODS:
-        input_pattern = str(_AGG_RESULTS_DIR / f"sample_{method}_{dataset}_input_*.tex")
-        input_files = sorted(glob(input_pattern))
-        if input_files:
-            def extract_epoch_from_input(fname):
-                base = os.path.basename(fname)
-                try:
-                    return int(base.split("_")[-1].replace(".tex", ""))
-                except Exception:
-                    return 0
-            # Find the input file matching this epoch or closest
-            matching_files = [f for f in input_files if str(epoch) in os.path.basename(f)]
-            if matching_files:
-                input_file = matching_files[0]
-            else:
-                input_file = max(input_files, key=extract_epoch_from_input)
-            table_content = _agg_extract_table_content(input_file)
-            if table_content and "Prev" not in method_tables:
-                method_tables["Prev"] = table_content
-                break
-
     # Get tables for each method at the specified epoch
     for method in ALL_SAMPLING_METHODS:
         pattern = str(_AGG_RESULTS_DIR / f"sample_{method}_{dataset}_{epoch}.tex")
@@ -256,8 +190,7 @@ def create_table_methods_at_epoch(epoch: int, dataset: str = "OCTA500_6M"):
     all_rows = []
 
     # Process each method's table
-    method_order = ["Prev"] + ALL_SAMPLING_METHODS
-    for method in method_order:
+    for method in ALL_SAMPLING_METHODS:
         if method not in method_tables:
             continue
 
@@ -326,20 +259,18 @@ def write_latex_table(
     dataset: str,
     sampling_method: str = "",
     models: List[str] = DEFAULT_MODELS,
-    prediction_type: str = "final",
     epoch: int = 100000,
 ):
     """Generate LaTeX table for a specific configuration."""
     results = {}
     for model in models:
-        res = load_model_metrics(dataset, model, sampling_method, prediction_type=prediction_type, epoch=epoch)
+        res = load_model_metrics(dataset, model, sampling_method, prediction_type="final", epoch=epoch)
         if res:
             results[model] = res
 
     if not results:
         results.clear()  # 명확히 초기화
-        suffix = "" if prediction_type == "final" else f"-{prediction_type}"
-        file_name = f"{sampling_method}/{dataset}-{(models[0] if models else 'unknown')}/metrics-{epoch:06d}{suffix}.csv"
+        file_name = f"{sampling_method}/{dataset}-{(models[0] if models else 'unknown')}/metrics-{epoch:06d}.csv"
         logger.warning(f"No results for ({file_name})")
         return
 
@@ -399,8 +330,7 @@ def write_latex_table(
     ])
 
     # 파일 저장 및 컴파일
-    exp_name_base = f"{sampling_method}_{dataset}" if sampling_method else f"base_{dataset}"
-    exp_name = exp_name_base if prediction_type == "final" else f"{exp_name_base}_{prediction_type}"
+    exp_name = f"{sampling_method}_{dataset}" if sampling_method else f"base_{dataset}"
     tex_path = TEX_DIR / f"sample_{exp_name}_{epoch}.tex"
     tex_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -617,11 +547,10 @@ def write_overall_latex_table(
     datasets: List[str],
     sampling_methods: List[str],
     models: List[str],
-    prediction_type: str = "final",
     epoch: int = 100000,
 ):
     """Generate a comprehensive LaTeX table for all experiments."""
-    hide_method = prediction_type == "input"
+    hide_method = False
     lines = [
         "\\documentclass{article}",
         "\\usepackage{booktabs, amssymb, amsmath, graphicx}",
@@ -646,7 +575,7 @@ def write_overall_latex_table(
             # Always iterate over all models, even if no results
             results_map = {}
             for model in models:
-                res = load_model_metrics(dataset, model, sm, prediction_type=prediction_type, epoch=epoch)
+                res = load_model_metrics(dataset, model, sm, prediction_type="final", epoch=epoch)
                 results_map[model] = res
 
             any_valid = any(results_map[m] for m in models)
@@ -692,8 +621,7 @@ def write_overall_latex_table(
 
     lines.append("\\end{document}")
 
-    suffix = "" if prediction_type == "final" else f"_{prediction_type}"
-    tex_path = TEX_DIR / f"overall_results{suffix}_{epoch}.tex"
+    tex_path = TEX_DIR / f"overall_results_{epoch}.tex"
     with open(tex_path, "w") as f:
         f.write("\n".join(lines))
 
@@ -701,9 +629,9 @@ def write_overall_latex_table(
 
 
 ALL_DATASETS = ["DRIVE", "OCTA500_3M", "OCTA500_6M"]
-ALL_SAMPLING_METHODS = ["gaussian", "binomial", "poisson", "flow"]
+ALL_SAMPLING_METHODS = ["gaussian", "binomial", "poisson"]
 ALL_PREDICTION_TYPES = list(PREDICTION_PATTERNS.keys())
-ALL_STEPS = [10_000, 20_000, 50_000, 100_000]
+ALL_STEPS = [100_000]
 
 
 @click.command()
@@ -717,15 +645,8 @@ ALL_STEPS = [10_000, 20_000, 50_000, 100_000]
 @click.option("--evaluate-only", is_flag=True)
 @click.option("--table-only", is_flag=True)
 @click.option("--plot-only", is_flag=True)
-@click.option(
-    "--prediction-type",
-    "prediction_types",
-    type=click.Choice(list(PREDICTION_PATTERNS.keys())),
-    multiple=True,
-    help="Prediction source to evaluate (e.g., final, input). Use multiple times for several sources.",
-)
 @click.option("--delete-results", is_flag=True, help="Delete existing results before running.")
-def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot_only, delete_results, prediction_types):
+def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot_only, delete_results):
     """Main execution flow optimized for clarity."""
 
     plt.rcParams['font.family'] = 'Times New Roman'
@@ -735,7 +656,6 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
     datasets = ALL_DATASETS if dataset == "all" else [dataset]
     models = [model] if model else DEFAULT_MODELS
     sampling_methods = [diffusion_type] if diffusion_type else ALL_SAMPLING_METHODS
-    prediction_types = list(dict.fromkeys(prediction_types)) if prediction_types else ALL_PREDICTION_TYPES
 
     # epoch 리스트 처리 (기본값)
     if not epochs:
@@ -745,7 +665,6 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
     logger.info(f"Models: {models}")
     logger.info(f"Sampling Methods: {sampling_methods}")
     logger.info(f"Epochs: {epochs}")
-    logger.info(f"Prediction Types: {prediction_types}")
     # if delete_results 옵션 처리
     if delete_results and RESULTS_DIR.exists():
         shutil.rmtree(RESULTS_DIR)
@@ -761,28 +680,13 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
     for epoch in epochs:
         # 1. Evaluation Phase
         if not (table_only or plot_only):
-            eval_tasks = [
-                (sm, ds, md, "final")
-                for sm, ds, md in configs
-            ]
+            eval_tasks = configs
             t_eval = tqdm(eval_tasks, desc=f"Evaluating (epoch={epoch})", unit="run", leave=False)
             set_desc_eval = getattr(t_eval, "set_description", None)
-            for sm, ds, md, pred_type in t_eval:
+            for sm, ds, md in t_eval:
                 if set_desc_eval:
-                    set_desc_eval(f"Evaluating {sm}-{ds}-{md}-{pred_type} (epoch={epoch})")
-                evaluate_results(ds, md, epoch, sm, prediction_type=pred_type)
-
-            # 각 sampling_method별로 input prediction도 평가
-            input_tasks = [
-                (sm, ds, md, "input")
-                for sm, ds, md in configs
-            ]
-            t_input = tqdm(input_tasks, desc=f"Evaluating inputs (epoch={epoch})", unit="run", leave=False)
-            set_desc_input = getattr(t_input, "set_description", None)
-            for sm, ds, md, pred_type in t_input:
-                if set_desc_input:
-                    set_desc_input(f"Evaluating {sm}-{ds}-{md}-{pred_type} (epoch={epoch})")
-                evaluate_results(ds, md, epoch, sm, prediction_type=pred_type)
+                    set_desc_eval(f"Evaluating {sm}-{ds}-{md} (epoch={epoch})")
+                evaluate_results(ds, md, epoch, sm, prediction_type="final")
 
         if evaluate_only:
             continue
@@ -793,13 +697,9 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
 
         # Tables
         if not plot_only:
-            table_tasks = [
-                (ds, sm, pred_type)
-                for (ds, sm) in unique_ds_sm
-                for pred_type in prediction_types
-            ]
-            for ds, sm, pred_type in tqdm(table_tasks, desc=f"Tables (epoch={epoch})", unit="job", leave=False):
-                write_latex_table(ds, sm, models, prediction_type=pred_type, epoch=epoch)
+            table_tasks = unique_ds_sm
+            for ds, sm in tqdm(table_tasks, desc=f"Tables (epoch={epoch})", unit="job", leave=False):
+                write_latex_table(ds, sm, models, epoch=epoch)
 
         # Plots
         if not table_only:
@@ -808,8 +708,7 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
                 plot_results(ds, sm, models)
 
         if not plot_only:
-            for pred_type in tqdm(ALL_PREDICTION_TYPES, desc=f"Overall Tables (epoch={epoch})", unit="type", leave=False):
-                write_overall_latex_table(ALL_DATASETS, ALL_SAMPLING_METHODS, DEFAULT_MODELS, prediction_type=pred_type, epoch=epoch)
+            write_overall_latex_table(ALL_DATASETS, ALL_SAMPLING_METHODS, DEFAULT_MODELS, epoch=epoch)
 
         if not table_only:
             for _ds in tqdm(ALL_DATASETS, desc=f"Overall Plots (epoch={epoch})", unit="dataset", leave=False):

@@ -307,8 +307,8 @@ class BinomialDiffusion:
             alpha_bar_t = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
             sigma = (1 - alpha_bar_t_1) / (1 - alpha_bar_t)
             mean = sigma * x + (alpha_bar_t_1 - sigma * alpha_bar_t) * out["pred_xstart"]
-            # sample = Binomial(1, th.clip(mean, min=0, max=1)).sample()
-            sample = Binomial(1, mean).sample()
+            sample = Binomial(1, torch.clip(mean, min=0, max=1)).sample()
+            # sample = Binomial(1, mean).sample()
             return {"sample": sample, "pred_xstart": out["pred_xstart"]}
         else:
             return {"sample": out["mean"], "pred_xstart": out["pred_xstart"]}
@@ -322,6 +322,7 @@ class BinomialDiffusion:
         model_kwargs=None,
         device=None,
         progress=True,
+        return_intermediates=False,
     ):
         """
         Generate samples from the model using DDIM.
@@ -329,7 +330,8 @@ class BinomialDiffusion:
         Same usage as p_sample_loop().
         """
         final = None
-        for sample in self.ddim_sample_loop_progressive(
+        intermediates = [] if return_intermediates else None
+        for i, sample in enumerate(self.ddim_sample_loop_progressive(
             model,
             shape,
             noise=noise,
@@ -337,8 +339,12 @@ class BinomialDiffusion:
             model_kwargs=model_kwargs,
             device=device,
             progress=progress,
-        ):
+        )):
             final = sample
+            if intermediates is not None and (i % 50 == 0 or i == self.num_timesteps - 1 or i == 0):
+                intermediates.append(sample["sample"])
+        if return_intermediates:
+            return final["sample"], intermediates
         return final["sample"]
 
     def ddim_sample_loop_progressive(

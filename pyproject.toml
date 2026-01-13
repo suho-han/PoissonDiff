@@ -1,5 +1,5 @@
 [project]
-name = "poissondiff"
+name = "poisson-diffusion-segmentation"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
