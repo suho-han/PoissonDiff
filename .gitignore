@@ -11,8 +11,8 @@ workdir/
 notebooks/
 test-run/
 alert.py
-train.sh
-test.sh
+.vscode/launch.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
