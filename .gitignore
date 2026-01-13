@@ -8,7 +8,6 @@ workdir/
 .vscode/
 .vscode/launch.json
 .github/
-notebooks/
 test-run/
 alert.py
 .vscode/launch.json
