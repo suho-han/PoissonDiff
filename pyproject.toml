@@ -5,5 +5,18 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "gudhi>=3.11.0",
+    "autorootcwd>=1.0.1",
+    "blobfile>=3.1.0",
+    "matplotlib>=3.10.8",
+    "mpi4py>=4.1.1",
+    "mpich>=4.3.2",
+    "natsort>=8.4.0",
+    "numpy>=2.4.1",
+    "pandas>=3.0.0",
+    "pillow>=12.1.0",
+    "scikit-image>=0.26.0",
+    "tensorboard>=2.20.0",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "tqdm>=4.67.1",
 ]

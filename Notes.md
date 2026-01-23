@@ -61,7 +61,7 @@ $erosion(mask)$은 $3 \times 3$ `ones` 커널로 AND 연산을 수행하여 얻�
 ## packages
 
 ```bash
-uv pip install autorootcwd blobfile torch torchvision numpy \
+uv add autorootcwd blobfile torch torchvision numpy \
     pillow mpi4py mpich \
     natsort matplotlib tqdm \
     pandas scikit-image

@@ -224,7 +224,7 @@ def create_table_methods_at_epoch(epoch: int, dataset: str = "OCTA500_6M"):
             first_row = False
 
         # Add separator between methods (except last)
-        if method != method_order[-1] or method not in method_tables:
+        if method != ALL_SAMPLING_METHODS[-1] or method not in method_tables:
             all_rows.append(r'                \midrule')
 
     output_str += "\n".join(all_rows) + "\n"
@@ -383,28 +383,27 @@ def plot_results(dataset: str, sampling_method: str = "", models: List[str] = DE
     model_images = {}
 
     # 이미지 검색 로직 최적화
+    latest_dir = None
     for model in models:
         work_path = _get_workdir_path(dataset, model, sampling_method)
-        res_dirs = sorted(work_path.glob("results-*"))
+        res_dirs = natsorted(work_path.glob("results-*"))
         if not res_dirs:
             continue
 
         latest_dir = res_dirs[-1]
         images = natsorted(list(latest_dir.glob("*image*")))
-        inputs = natsorted(list(latest_dir.glob("*input*")))
         targets = natsorted(list(latest_dir.glob("*target*")))
         outputs = natsorted(list(latest_dir.glob("*final_output*")))
         epoch = latest_dir.name.split("-")[-1]
 
-        if not (images or inputs or targets or outputs):
+        if not (images or targets or outputs):
             continue
 
-        if index >= len(images) or index >= len(inputs) or index >= len(outputs) or index >= len(targets):
+        if index >= len(images) or index >= len(outputs) or index >= len(targets):
             continue
 
         imgs = {
             "Image": images[index],
-            "Input": inputs[index],
             f"Output({sampling_method})": outputs[index],
             "Target": targets[index],
         }
@@ -414,11 +413,11 @@ def plot_results(dataset: str, sampling_method: str = "", models: List[str] = DE
 
     if not model_images:
         model_images.clear()  # 명확히 초기화
-        print(f"No images found for plotting {sampling_method}/{dataset}")
+        print(f"No images found for plotting {latest_dir}")
         return
 
     n_models = len(model_images)
-    fig, axes = plt.subplots(n_models, 4, figsize=(12, 3 * n_models), constrained_layout=True)
+    fig, axes = plt.subplots(n_models, 3, figsize=(9, 3 * n_models), constrained_layout=True)
     fig.suptitle(f"Results for {dataset.replace('_', '-')} / {sampling_method} / {epoch}", fontsize=16, fontweight='bold')
     if n_models == 1:
         axes = axes[None, :]
@@ -465,23 +464,21 @@ def plot_total_results(dataset: str, sampling_methods: List[str], models: List[s
             latest_dir = res_dirs[-1]
 
             images = natsorted(list(latest_dir.glob("*image*")))
-            inputs = natsorted(list(latest_dir.glob("*input*")))
             targets = natsorted(list(latest_dir.glob("*target*")))
             outputs = natsorted(list(latest_dir.glob("*final_output*")))
 
-            if not images or not inputs or not targets or not outputs:
+            if not images or not targets or not outputs:
                 continue
 
-            if index >= len(images) or index >= len(inputs) or index >= len(targets) or index >= len(outputs):
+            if index >= len(images) or index >= len(targets) or index >= len(outputs):
                 continue
 
             if not base_found:
                 img_path = images[index]
-                input_path = inputs[index]
                 tgt_path = targets[index]
-                if img_path and input_path and tgt_path and img_path.exists() and input_path.exists() and tgt_path.exists():
+                if img_path and tgt_path and img_path.exists() and tgt_path.exists():
                     model_data["Image"] = img_path
-                    model_data["Input"] = input_path
+                    model_data["Target"] = tgt_path
                     model_data["Target"] = tgt_path
                     base_found = True
 
@@ -499,7 +496,7 @@ def plot_total_results(dataset: str, sampling_methods: List[str], models: List[s
         return
 
     active_methods = [sm for sm in sampling_methods if sm in valid_methods]
-    cols = ["Image", "Input", "Target"] + active_methods
+    cols = ["Image", "Target"] + active_methods
     n_models = len(data_to_plot)
     n_cols = len(cols)
 
@@ -631,11 +628,34 @@ def write_overall_latex_table(
 ALL_DATASETS = ["DRIVE", "OCTA500_3M", "OCTA500_6M"]
 ALL_SAMPLING_METHODS = ["gaussian", "binomial", "poisson"]
 ALL_PREDICTION_TYPES = list(PREDICTION_PATTERNS.keys())
-ALL_STEPS = [100_000]
+ALL_STEPS = [100_000, 500_000, 1_000_000]
+
+# Abbreviation support for dataset names
+DATASET_ALIASES = {
+    "O6": "OCTA500_6M",
+    "O3": "OCTA500_3M",
+    "D": "DRIVE",
+}
+
+def normalize_dataset(name: str) -> str:
+    """Normalize dataset name, supporting abbreviations like 'O6', 'O3', 'D'."""
+    if not name:
+        return name
+    key = str(name).strip()
+    # 'all' handled by caller, keep canonical names otherwise
+    alias_map = {k.upper(): v for k, v in DATASET_ALIASES.items()}
+    key_upper = key.upper()
+    if key in ALL_DATASETS:
+        return key
+    if key_upper in alias_map:
+        return alias_map[key_upper]
+    raise click.BadParameter(
+        f"Unknown dataset '{name}'. Use one of {ALL_DATASETS} or abbreviations {sorted(DATASET_ALIASES.keys())}."
+    )
 
 
 @click.command()
-@click.option("--dataset", required=True, type=click.Choice(["DRIVE", "OCTA500_3M", "OCTA500_6M", "all"]))
+@click.option("--dataset", required=True, type=str, default="O6", help="Dataset name (supports abbreviations: O6, O3, D, or 'all')")
 @click.option("--model", type=str, help="Specific model name.")
 @click.option(
     "--epochs", multiple=True, type=int,
@@ -653,7 +673,7 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
     # plt.rcParams['font.family'] = 'serif'
 
     # 설정 초기화
-    datasets = ALL_DATASETS if dataset == "all" else [dataset]
+    datasets = ALL_DATASETS if str(dataset).lower() == "all" else [normalize_dataset(dataset)]
     models = [model] if model else DEFAULT_MODELS
     sampling_methods = [diffusion_type] if diffusion_type else ALL_SAMPLING_METHODS
 
@@ -675,7 +695,6 @@ def main(dataset, model, epochs, diffusion_type, evaluate_only, table_only, plot
 
     # Itertools product를 사용하여 중첩 루프 평탄화
     configs = list(itertools.product(sampling_methods, datasets, models))
-    input_configs = list(itertools.product(datasets, models))
 
     for epoch in epochs:
         # 1. Evaluation Phase

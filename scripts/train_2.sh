@@ -5,8 +5,8 @@ DATASET=OCTA500_6M
 MODEL=FRUnet
 EPOCH=1000000
 
-DIFFUSION_TYPE="gaussian"
-GPU=2
+DIFFUSION_TYPE="binomial"
+GPU=1
 
 uv run image_train.py --dataset "$DATASET" --data_dir data/"$DATASET" \
     --prior_model "$MODEL"  --image_size 256 --num_channels 128 --num_res_blocks 3 \

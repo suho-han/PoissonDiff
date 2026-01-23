@@ -166,10 +166,15 @@ class TensorBoardOutputFormat(KVWriter):
     def writekvs(self, kvs):
         if self.writer is None:
             return
+        # Use the 'step' value from kvs if available, otherwise use internal counter
+        if 'step' in kvs:
+            self.step = int(kvs['step'])
         for k, v in kvs.items():
             self.writer.add_scalar(k, float(v), self.step)
         self.writer.flush()
-        self.step += 1
+        # Only increment if we didn't get a step from kvs
+        if 'step' not in kvs:
+            self.step += 1
 
     def add_image(self, tag, images, step=None, max_images=4):
         if self.writer is None or images is None:
@@ -227,8 +232,13 @@ class WandbOutputFormat(KVWriter):
     def writekvs(self, kvs):
         if self.wandb is None:
             return
+        # Use the 'step' value from kvs if available, otherwise use internal counter
+        if 'step' in kvs:
+            self.step = int(kvs['step'])
         self.wandb.log(kvs, step=self.step)
-        self.step += 1
+        # Only increment if we didn't get a step from kvs
+        if 'step' not in kvs:
+            self.step += 1
 
     def add_image(self, tag, images, step=None, max_images=4):
         if self.wandb is None or images is None:

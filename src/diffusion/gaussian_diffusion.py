@@ -329,13 +329,13 @@ class GaussianDiffusion:
                 return x.clamp(-1, 1)
             return x
 
-        if self.model_mean_type == ModelMeanType.PREVIOUS_X:
+        if self.model_mean_type == ModelMeanType.PREVIOUS_Y:
             pred_xstart = process_xstart(
                 self._predict_xstart_from_xprev(x_t=x, t=t, xprev=model_output)
             )
             model_mean = model_output
-        elif self.model_mean_type in [ModelMeanType.START_X, ModelMeanType.EPSILON]:
-            if self.model_mean_type == ModelMeanType.START_X:
+        elif self.model_mean_type in [ModelMeanType.START_Y, ModelMeanType.EPSILON]:
+            if self.model_mean_type == ModelMeanType.START_Y:
                 pred_xstart = process_xstart(model_output)
             else:
                 pred_xstart = process_xstart(
@@ -666,6 +666,7 @@ class GaussianDiffusion:
         device=None,
         progress=False,
         eta=0.0,
+        return_intermediates=False,
     ):
         """
         Generate samples from the model using DDIM.
@@ -673,7 +674,8 @@ class GaussianDiffusion:
         Same usage as p_sample_loop().
         """
         final = None
-        for sample in self.ddim_sample_loop_progressive(
+        intermediates = [] if return_intermediates else None
+        for i, sample in enumerate(self.ddim_sample_loop_progressive(
             model,
             shape,
             noise=noise,
@@ -684,8 +686,12 @@ class GaussianDiffusion:
             device=device,
             progress=progress,
             eta=eta,
-        ):
+        )):
             final = sample
+            if intermediates is not None and i % 50 == 0:
+                    intermediates.append(sample["sample"])
+        if return_intermediates:
+            return final["sample"], intermediates
         return final["sample"]
 
     def ddim_sample_loop_progressive(
